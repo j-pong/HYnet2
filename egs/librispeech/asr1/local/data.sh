@@ -57,7 +57,9 @@ fi
 
 if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
     log "stage 3: combine all training and development sets"
-    utils/combine_data.sh --extra_files utt2num_frames data/${train_set} data/train_clean_100 data/train_clean_360 data/train_other_500
+    if [ "train_960" = "${train_set}" ]; then
+        utils/combine_data.sh --extra_files utt2num_frames data/${train_set} data/train_clean_100 data/train_clean_360 data/train_other_500
+    fi
     utils/combine_data.sh --extra_files utt2num_frames data/${train_dev} data/dev_clean data/dev_other
 fi
 

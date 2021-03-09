@@ -34,8 +34,11 @@ egs/*/*/downloads
 egs/*/*/dump
 egs/*/*/enhan
 egs/*/*/exp
+egs/*/*/fbank
+egs/*/*/mfcc
+egs/*/*/stft
 egs/*/*/tensorboard
-
+egs/*/*/wav*
 
 # tools related
 tools/bin
@@ -43,11 +46,25 @@ tools/include
 tools/lib
 tools/lib64
 tools/bats-core
+tools/chainer_ctc/
+tools/kaldi*
 tools/miniconda.sh
+tools/moses/
+tools/mwerSegmenter/
+tools/nkf/
 tools/venv/
+tools/sentencepiece/
 tools/swig/
+tools/warp-ctc/
+tools/warp-transducer/
 tools/*.done
+tools/PESQ*
+tools/hts_engine_API*
+tools/open_jtalk*
+tools/pyopenjtalk*
 tools/activate_python.sh
+tools/sctk*
+tools/sph2pipe*
 tools/espnet
-tools/kaldi
+tools/fairseq
 tools/installer

@@ -30,6 +30,7 @@ skip_train=false     # Skip training stages.
 skip_eval=false      # Skip decoding and evaluation stages.
 skip_upload=true     # Skip packing and uploading stages.
 ngpu=1               # The number of gpus ("0" uses cpu, otherwise use gpu).
+ngpu_ids=
 num_nodes=1          # The number of nodes.
 nj=32                # The number of parallel jobs.
 inference_nj=32      # The number of parallel jobs in decoding.
@@ -103,6 +104,7 @@ download_model= # Download a model from Model Zoo and use it for decoding.
 
 # [Task dependent] Set the datadir name created by local/data.sh
 train_set=       # Name of training set.
+train_pseudo_set=
 valid_set=       # Name of validation set used for monitoring/tuning network training.
 test_sets=       # Names of test sets. Multiple items (e.g., both dev and eval sets) can be specified.
 bpe_train_text=  # Text file path of bpe training set.
@@ -435,8 +437,8 @@ if ! "${skip_data_prep}"; then
             # If nothing is need, then format_wav_scp.sh does nothing:
             # i.e. the input file format and rate is same as the output.
 
-            for dset in "${train_set}" "${valid_set}" ${test_sets}; do
-                if [ "${dset}" = "${train_set}" ] || [ "${dset}" = "${valid_set}" ]; then
+            for dset in "${train_set}" "${train_pseudo_set}"; do
+                if [ "${dset}" = "${train_set}" ] || [ "${dset}" = "${train_pseudo_set}" ] || [ "${dset}" = "${valid_set}" ]; then
                     _suf="/org"
                 else
                     _suf=""
@@ -525,7 +527,7 @@ if ! "${skip_data_prep}"; then
         log "Stage 4: Remove long/short data: ${data_feats}/org -> ${data_feats}"
 
         # NOTE(kamo): Not applying to test_sets to keep original data
-        for dset in "${train_set}" "${valid_set}"; do
+        for dset in "${train_set}" "${train_pseudo_set}" "${valid_set}"; do
 
             # Copy data dir
             utils/copy_data_dir.sh --validate_opts --non-print "${data_feats}/org/${dset}" "${data_feats}/${dset}"
@@ -1012,6 +1014,11 @@ if ! "${skip_train}"; then
             _opts+="--train_shape_file ${asr_stats_dir}/train/speech_shape "
             _opts+="--train_shape_file ${asr_stats_dir}/train/text_shape.${token_type} "
         fi
+        # # FIXME: Hard coding for instance task
+        # _opts+="--train_pseudo_data_path_and_name_and_type ${data_feats}/${train_pseudo_set}/${_scp},speech,${_type} "
+        # _opts+="--train_pseudo_data_path_and_name_and_type ${data_feats}/${train_pseudo_set}/text,text,text "
+        # _opts+="--train_pseudo_shape_file ${asr_stats_dir}/semi/speech_shape "
+        # _opts+="--train_pseudo_shape_file ${asr_stats_dir}/semi/text_shape.${token_type} "
 
         log "Generate '${asr_exp}/run.sh'. You can resume the process from stage 10 using this script"
         mkdir -p "${asr_exp}"; echo "${run_args} --stage 10 \"\$@\"; exit \$?" > "${asr_exp}/run.sh"; chmod +x "${asr_exp}/run.sh"
@@ -1033,7 +1040,7 @@ if ! "${skip_train}"; then
             --num_nodes "${num_nodes}" \
             --init_file_prefix "${asr_exp}"/.dist_init_ \
             --multiprocessing_distributed true -- \
-            ${python} -m espnet2.bin.asr_train \
+            CUDA_VISIBLE_DEVICES=${ngpu_ids} ${python} -m espnet2.bin.asr_train \
                 --use_preprocessor true \
                 --bpemodel "${bpemodel}" \
                 --token_type "${token_type}" \
