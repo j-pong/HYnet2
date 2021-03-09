@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from espnet2.tasks.asr import ASRTask
+from hynet.tasks.asr import ASRTask
 
 
 def get_parser():

@@ -846,6 +846,7 @@ if ! "${skip_train}"; then
 
     if [ ${stage} -le 9 ] && [ ${stop_stage} -ge 9 ]; then
         _asr_train_dir="${data_feats}/${train_set}"
+        _asr_train_pseudo_dir="${data_feats}/${train_pseudo_set}"
         _asr_valid_dir="${data_feats}/${valid_set}"
         log "Stage 9: ASR collect stats: train_set=${_asr_train_dir}, valid_set=${_asr_valid_dir}"
 
@@ -919,6 +920,8 @@ if ! "${skip_train}"; then
                 --g2p "${g2p}" \
                 --train_data_path_and_name_and_type "${_asr_train_dir}/${_scp},speech,${_type}" \
                 --train_data_path_and_name_and_type "${_asr_train_dir}/text,text,text" \
+                --train_pseudo_data_path_and_name_and_type "${_asr_train_pseudo_dir}/${_scp},speech,${_type}" \
+                --train_pseudo_data_path_and_name_and_type "${_asr_train_pseudo_dir}/text,text,text" \
                 --valid_data_path_and_name_and_type "${_asr_valid_dir}/${_scp},speech,${_type}" \
                 --valid_data_path_and_name_and_type "${_asr_valid_dir}/text,text,text" \
                 --train_shape_file "${_logdir}/train.JOB.scp" \
@@ -1040,7 +1043,7 @@ if ! "${skip_train}"; then
             --num_nodes "${num_nodes}" \
             --init_file_prefix "${asr_exp}"/.dist_init_ \
             --multiprocessing_distributed true -- \
-            CUDA_VISIBLE_DEVICES=${ngpu_ids} ${python} -m espnet2.bin.asr_train \
+            CUDA_VISIBLE_DEVICES=${ngpu_ids} ${python} -m hynet.bin.asr_train \
                 --use_preprocessor true \
                 --bpemodel "${bpemodel}" \
                 --token_type "${token_type}" \
