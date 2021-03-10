@@ -91,6 +91,7 @@ class TrainerOptions:
     best_model_criterion: Sequence[Sequence[str]]
     val_scheduler_criterion: Sequence[str]
     unused_parameters: bool
+    stage: int
 
 
 class Trainer:
@@ -282,33 +283,34 @@ class Trainer:
 
             reporter.set_epoch(iepoch)
             # 1. Train and validation for one-epoch
-            with reporter.observe("train_pseudo") as sub_reporter:
-                all_steps_are_invalid = cls.train_one_epoch(
-                    model=dp_model,
-                    optimizers=optimizers,
-                    schedulers=schedulers,
-                    iterator=train_pseudo_iter_factory.build_iter(iepoch),
-                    reporter=sub_reporter,
-                    scaler=scaler,
-                    summary_writer=summary_writer,
-                    options=trainer_options,
-                    distributed_option=distributed_option,
-                    mode='train_pseudo',
-                )
-
-            with reporter.observe("train") as sub_reporter:
-                all_steps_are_invalid = cls.train_one_epoch(
-                    model=dp_model,
-                    optimizers=optimizers,
-                    schedulers=schedulers,
-                    iterator=train_iter_factory.build_iter(iepoch),
-                    reporter=sub_reporter,
-                    scaler=scaler,
-                    summary_writer=summary_writer,
-                    options=trainer_options,
-                    distributed_option=distributed_option,
-                    mode='train',
-                )
+            if trainer_options.stage == 1:
+                with reporter.observe("train_pseudo") as sub_reporter:
+                    all_steps_are_invalid = cls.train_one_epoch(
+                        model=dp_model,
+                        optimizers=optimizers,
+                        schedulers=schedulers,
+                        iterator=train_pseudo_iter_factory.build_iter(iepoch),
+                        reporter=sub_reporter,
+                        scaler=scaler,
+                        summary_writer=summary_writer,
+                        options=trainer_options,
+                        distributed_option=distributed_option,
+                        mode='train_pseudo',
+                    )
+            elif trainer_options.stage == 2:
+                with reporter.observe("train") as sub_reporter:
+                    all_steps_are_invalid = cls.train_one_epoch(
+                        model=dp_model,
+                        optimizers=optimizers,
+                        schedulers=schedulers,
+                        iterator=train_iter_factory.build_iter(iepoch),
+                        reporter=sub_reporter,
+                        scaler=scaler,
+                        summary_writer=summary_writer,
+                        options=trainer_options,
+                        distributed_option=distributed_option,
+                        mode='train',
+                    )
 
             with reporter.observe("valid") as sub_reporter:
                 cls.validate_one_epoch(

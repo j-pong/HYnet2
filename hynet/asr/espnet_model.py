@@ -89,6 +89,8 @@ class ESPnetASRModel(AbsESPnetModel):
             normalize_length=length_normalized_loss,
         )
 
+        self.corrupt_mat = torch.nn.Parameter(torch.eye(vocab_size, vocab_size))
+
         if report_cer or report_wer:
             self.error_calculator = ErrorCalculator(
                 token_list, sym_space, sym_blank, report_cer, report_wer
@@ -102,7 +104,7 @@ class ESPnetASRModel(AbsESPnetModel):
         speech_lengths: torch.Tensor,
         text: torch.Tensor,
         text_lengths: torch.Tensor,
-        mode: str='train',
+        mode: str='train_pseudo',
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
         """Frontend + Encoder + Decoder + Calc loss
 
@@ -122,9 +124,6 @@ class ESPnetASRModel(AbsESPnetModel):
         ), (speech.shape, speech_lengths.shape, text.shape, text_lengths.shape)
         batch_size = speech.shape[0]
 
-        print(mode, speech.shape)
-        exit()
-
         # for data-parallel
         text = text[:, : text_lengths.max()]
 
@@ -133,9 +132,9 @@ class ESPnetASRModel(AbsESPnetModel):
 
         # 2a. Attention-decoder branch
         if self.ctc_weight == 1.0:
-            loss_att, acc_att, cer_att, wer_att = None, None, None, None
+            loss_att, out_att, acc_att, cer_att, wer_att = None, None, None, None
         else:
-            loss_att, acc_att, cer_att, wer_att = self._calc_att_loss(
+            loss_att, out_att, acc_att, cer_att, wer_att = self._calc_att_loss(
                 encoder_out, encoder_out_lens, text, text_lengths
             )
 
@@ -156,7 +155,22 @@ class ESPnetASRModel(AbsESPnetModel):
         elif self.ctc_weight == 1.0:
             loss = loss_ctc
         else:
-            loss = self.ctc_weight * loss_ctc + (1 - self.ctc_weight) * loss_att
+            loss = self.ctc_weight * loss_ctc + (1 - self.ctc_weight) * loss_att 
+
+        if mode == 'train':
+            # NOTE(j-pong): Ohter running_update_param, i.e., mean param of the bathnorm, 
+            # will have the problem of tasks. Piz check this problem after.
+            loss *= 0.0  # remove the gradient. 
+
+            # clean label X noisy label
+            grad_mat = torch.zeros_like(self.corrup_mat)
+            for i in range(self.vocab_size):
+                indces = torch.range(0, self.vocab_size)[text == i]
+                grad_mat[i] = torch.softmax(out_att, dim=-1)[indces]
+
+            self.corrupt_mat.grad = -grad_mat
+        else:
+            self.corrupt_mat.grad = None
 
         stats = dict(
             loss=loss.detach(),
@@ -256,6 +270,7 @@ class ESPnetASRModel(AbsESPnetModel):
         decoder_out, _ = self.decoder(
             encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens
         )
+        out_att = decoder_out
 
         # 2. Compute attention loss
         loss_att = self.criterion_att(decoder_out, ys_out_pad)
@@ -272,7 +287,7 @@ class ESPnetASRModel(AbsESPnetModel):
             ys_hat = decoder_out.argmax(dim=-1)
             cer_att, wer_att = self.error_calculator(ys_hat.cpu(), ys_pad.cpu())
 
-        return loss_att, acc_att, cer_att, wer_att
+        return loss_att, out_att, acc_att, cer_att, wer_att
 
     def _calc_ctc_loss(
         self,

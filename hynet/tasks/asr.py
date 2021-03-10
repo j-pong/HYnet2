@@ -14,7 +14,6 @@ from typeguard import check_return_type
 
 from espnet2.asr.ctc import CTC
 from espnet2.asr.decoder.abs_decoder import AbsDecoder
-from espnet2.asr.decoder.rnn_decoder import RNNDecoder
 from espnet2.asr.decoder.transformer_decoder import (
     DynamicConvolution2DTransformerDecoder,  # noqa: H301
 )
@@ -73,6 +72,7 @@ from espnet2.utils.yaml_no_alias_safe_dump import yaml_no_alias_safe_dump
 from hynet.main_funcs.collect_stats import collect_stats
 from hynet.train.trainer import Trainer
 from hynet.asr.espnet_model import ESPnetASRModel
+from hynet.asr.decoder.rnn_decoder import RNNDecoder
 
 from espnet2.tasks.abs_task import IteratorOptions
 
@@ -180,6 +180,12 @@ class ASRTask(AbsTask):
             type=str_or_none,
             default=None,
             help="A text mapping int-id to token",
+        )
+        group.add_argument(
+            "--stage",
+            type=int,
+            default=1,
+            help="The train stage for SSL",
         )
         group.add_argument(
             "--init",
