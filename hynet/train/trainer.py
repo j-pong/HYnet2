@@ -166,6 +166,7 @@ class Trainer:
         optimizers: Sequence[torch.optim.Optimizer],
         schedulers: Sequence[Optional[AbsScheduler]],
         train_iter_factory: AbsIterFactory,
+        train_pseudo_iter_factory: AbsIterFactory,
         valid_iter_factory: AbsIterFactory,
         plot_attention_iter_factory: Optional[AbsIterFactory],
         trainer_options,
@@ -281,6 +282,20 @@ class Trainer:
 
             reporter.set_epoch(iepoch)
             # 1. Train and validation for one-epoch
+            with reporter.observe("train_pseudo") as sub_reporter:
+                all_steps_are_invalid = cls.train_one_epoch(
+                    model=dp_model,
+                    optimizers=optimizers,
+                    schedulers=schedulers,
+                    iterator=train_pseudo_iter_factory.build_iter(iepoch),
+                    reporter=sub_reporter,
+                    scaler=scaler,
+                    summary_writer=summary_writer,
+                    options=trainer_options,
+                    distributed_option=distributed_option,
+                    mode='train_pseudo',
+                )
+
             with reporter.observe("train") as sub_reporter:
                 all_steps_are_invalid = cls.train_one_epoch(
                     model=dp_model,
@@ -292,6 +307,7 @@ class Trainer:
                     summary_writer=summary_writer,
                     options=trainer_options,
                     distributed_option=distributed_option,
+                    mode='train',
                 )
 
             with reporter.observe("valid") as sub_reporter:
@@ -440,6 +456,7 @@ class Trainer:
         summary_writer: Optional[SummaryWriter],
         options: TrainerOptions,
         distributed_option: DistributedOption,
+        mode: str,
     ) -> bool:
         assert check_argument_types()
 
@@ -483,7 +500,7 @@ class Trainer:
 
             with autocast(scaler is not None):
                 with reporter.measure_time("forward_time"):
-                    retval = model(**batch)
+                    retval = model(**batch, mode=mode)
 
                     # Note(kamo):
                     # Supporting two patterns for the returned value from the model

@@ -879,12 +879,20 @@ if ! "${skip_train}"; then
         mkdir -p "${_logdir}"
 
         # Get the minimum number among ${nj} and the number lines of input files
-        _nj=$(min "${nj}" "$(<${_asr_train_dir}/${_scp} wc -l)" "$(<${_asr_valid_dir}/${_scp} wc -l)")
+        _nj=$(min "${nj}" "$(<${_asr_train_dir}/${_scp} wc -l)" "$(<${_asr_train_pseudo_dir}/${_scp} wc -l)" "$(<${_asr_valid_dir}/${_scp} wc -l)")
 
         key_file="${_asr_train_dir}/${_scp}"
         split_scps=""
         for n in $(seq "${_nj}"); do
             split_scps+=" ${_logdir}/train.${n}.scp"
+        done
+        # shellcheck disable=SC2086
+        utils/split_scp.pl "${key_file}" ${split_scps}
+
+        key_file="${_asr_train_pseudo_dir}/${_scp}"
+        split_scps=""
+        for n in $(seq "${_nj}"); do
+            split_scps+=" ${_logdir}/train_pseudo.${n}.scp"
         done
         # shellcheck disable=SC2086
         utils/split_scp.pl "${key_file}" ${split_scps}
@@ -909,7 +917,7 @@ if ! "${skip_train}"; then
 
         # shellcheck disable=SC2086
         ${train_cmd} JOB=1:"${_nj}" "${_logdir}"/stats.JOB.log \
-            ${python} -m espnet2.bin.asr_train \
+            ${python} -m hynet.bin.asr_train \
                 --collect_stats true \
                 --use_preprocessor true \
                 --bpemodel "${bpemodel}" \
@@ -925,6 +933,7 @@ if ! "${skip_train}"; then
                 --valid_data_path_and_name_and_type "${_asr_valid_dir}/${_scp},speech,${_type}" \
                 --valid_data_path_and_name_and_type "${_asr_valid_dir}/text,text,text" \
                 --train_shape_file "${_logdir}/train.JOB.scp" \
+                --train_pseudo_shape_file "${_logdir}/train_pseudo.JOB.scp" \
                 --valid_shape_file "${_logdir}/valid.JOB.scp" \
                 --output_dir "${_logdir}/stats.JOB" \
                 ${_opts} ${asr_args} || { cat "${_logdir}"/stats.1.log; exit 1; }
@@ -935,12 +944,16 @@ if ! "${skip_train}"; then
             _opts+="--input_dir ${_logdir}/stats.${i} "
         done
         # shellcheck disable=SC2086
-        ${python} -m espnet2.bin.aggregate_stats_dirs ${_opts} --output_dir "${asr_stats_dir}"
+        ${python} -m hynet.bin.aggregate_stats_dirs ${_opts} --output_dir "${asr_stats_dir}"
 
         # Append the num-tokens at the last dimensions. This is used for batch-bins count
         <"${asr_stats_dir}/train/text_shape" \
             awk -v N="$(<${token_list} wc -l)" '{ print $0 "," N }' \
             >"${asr_stats_dir}/train/text_shape.${token_type}"
+        
+        <"${asr_stats_dir}/train_pseudo/text_shape" \
+            awk -v N="$(<${token_list} wc -l)" '{ print $0 "," N }' \
+            >"${asr_stats_dir}/train_pseudo/text_shape.${token_type}"
 
         <"${asr_stats_dir}/valid/text_shape" \
             awk -v N="$(<${token_list} wc -l)" '{ print $0 "," N }' \
@@ -950,6 +963,7 @@ if ! "${skip_train}"; then
 
     if [ ${stage} -le 10 ] && [ ${stop_stage} -ge 10 ]; then
         _asr_train_dir="${data_feats}/${train_set}"
+        _asr_train_pseudo_dir="${data_feats}/${train_pseudo_set}"
         _asr_valid_dir="${data_feats}/${valid_set}"
         log "Stage 10: ASR Training: train_set=${_asr_train_dir}, valid_set=${_asr_valid_dir}"
 
@@ -984,44 +998,15 @@ if ! "${skip_train}"; then
             _opts+="--normalize=global_mvn --normalize_conf stats_file=${asr_stats_dir}/train/feats_stats.npz "
         fi
 
-        if [ "${num_splits_asr}" -gt 1 ]; then
-            # If you met a memory error when parsing text files, this option may help you.
-            # The corpus is split into subsets and each subset is used for training one by one in order,
-            # so the memory footprint can be limited to the memory required for each dataset.
+        _opts+="--train_data_path_and_name_and_type ${_asr_train_dir}/${_scp},speech,${_type} "
+        _opts+="--train_data_path_and_name_and_type ${_asr_train_dir}/text,text,text "
+        _opts+="--train_shape_file ${asr_stats_dir}/train/speech_shape "
+        _opts+="--train_shape_file ${asr_stats_dir}/train/text_shape.${token_type} "
 
-            _split_dir="${asr_stats_dir}/splits${num_splits_asr}"
-            if [ ! -f "${_split_dir}/.done" ]; then
-                rm -f "${_split_dir}/.done"
-                ${python} -m espnet2.bin.split_scps \
-                  --scps \
-                      "${_asr_train_dir}/${_scp}" \
-                      "${_asr_train_dir}/text" \
-                      "${asr_stats_dir}/train/speech_shape" \
-                      "${asr_stats_dir}/train/text_shape.${token_type}" \
-                  --num_splits "${num_splits_asr}" \
-                  --output_dir "${_split_dir}"
-                touch "${_split_dir}/.done"
-            else
-                log "${_split_dir}/.done exists. Spliting is skipped"
-            fi
-
-            _opts+="--train_data_path_and_name_and_type ${_split_dir}/${_scp},speech,${_type} "
-            _opts+="--train_data_path_and_name_and_type ${_split_dir}/text,text,text "
-            _opts+="--train_shape_file ${_split_dir}/speech_shape "
-            _opts+="--train_shape_file ${_split_dir}/text_shape.${token_type} "
-            _opts+="--multiple_iterator true "
-
-        else
-            _opts+="--train_data_path_and_name_and_type ${_asr_train_dir}/${_scp},speech,${_type} "
-            _opts+="--train_data_path_and_name_and_type ${_asr_train_dir}/text,text,text "
-            _opts+="--train_shape_file ${asr_stats_dir}/train/speech_shape "
-            _opts+="--train_shape_file ${asr_stats_dir}/train/text_shape.${token_type} "
-        fi
-        # # FIXME: Hard coding for instance task
-        # _opts+="--train_pseudo_data_path_and_name_and_type ${data_feats}/${train_pseudo_set}/${_scp},speech,${_type} "
-        # _opts+="--train_pseudo_data_path_and_name_and_type ${data_feats}/${train_pseudo_set}/text,text,text "
-        # _opts+="--train_pseudo_shape_file ${asr_stats_dir}/semi/speech_shape "
-        # _opts+="--train_pseudo_shape_file ${asr_stats_dir}/semi/text_shape.${token_type} "
+        _opts+="--train_pseudo_data_path_and_name_and_type ${_asr_train_pseudo_dir}/${_scp},speech,${_type} "
+        _opts+="--train_pseudo_data_path_and_name_and_type ${_asr_train_pseudo_dir}/text,text,text "
+        _opts+="--train_pseudo_shape_file ${asr_stats_dir}/train_pseudo/speech_shape "
+        _opts+="--train_pseudo_shape_file ${asr_stats_dir}/train_pseudo/text_shape.${token_type} "
 
         log "Generate '${asr_exp}/run.sh'. You can resume the process from stage 10 using this script"
         mkdir -p "${asr_exp}"; echo "${run_args} --stage 10 \"\$@\"; exit \$?" > "${asr_exp}/run.sh"; chmod +x "${asr_exp}/run.sh"

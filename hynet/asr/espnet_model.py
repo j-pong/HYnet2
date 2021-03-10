@@ -102,6 +102,7 @@ class ESPnetASRModel(AbsESPnetModel):
         speech_lengths: torch.Tensor,
         text: torch.Tensor,
         text_lengths: torch.Tensor,
+        mode: str='train',
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
         """Frontend + Encoder + Decoder + Calc loss
 
@@ -120,6 +121,9 @@ class ESPnetASRModel(AbsESPnetModel):
             == text_lengths.shape[0]
         ), (speech.shape, speech_lengths.shape, text.shape, text_lengths.shape)
         batch_size = speech.shape[0]
+
+        print(mode, speech.shape)
+        exit()
 
         # for data-parallel
         text = text[:, : text_lengths.max()]
