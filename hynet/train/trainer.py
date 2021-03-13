@@ -298,11 +298,25 @@ class Trainer:
                         mode='train_pseudo',
                     )
             elif trainer_options.stage == 2:
+                # For implicit case
+                # with reporter.observe("train") as sub_reporter:
+                #     all_steps_are_invalid = cls.train_one_epoch(
+                #         model=dp_model,
+                #         optimizers=optimizers,
+                #         schedulers=schedulers,
+                #         iterator=train_iter_factory.build_iter(iepoch),
+                #         reporter=sub_reporter,
+                #         scaler=scaler,
+                #         summary_writer=summary_writer,
+                #         options=trainer_options,
+                #         distributed_option=distributed_option,
+                #         mode='train',
+                #     )
+
+                # For explicit case
                 with reporter.observe("train") as sub_reporter:
-                    all_steps_are_invalid = cls.train_one_epoch(
+                    cls.train_corrupt_one_epoch(
                         model=dp_model,
-                        optimizers=optimizers,
-                        schedulers=schedulers,
                         iterator=train_iter_factory.build_iter(iepoch),
                         reporter=sub_reporter,
                         scaler=scaler,
@@ -322,6 +336,19 @@ class Trainer:
                 )
 
             if not distributed_option.distributed or distributed_option.dist_rank == 0:
+                # save the corrupt_mat to image
+                import matplotlib.pyplot as plt
+
+                corrupt_mat = model.corrupt_mat.detach().cpu().numpy().astype(np.float32)
+
+                plt.imshow(corrupt_mat, aspect="auto")
+                plt.colorbar()
+
+                p = Path(output_dir / "corrupt_mat" / f"{iepoch}.ep.png")
+                p.parent.mkdir(parents=True, exist_ok=True)
+                
+                plt.savefig(p)
+
                 # att_plot doesn't support distributed
                 if plot_attention_iter_factory is not None:
                     with reporter.observe("att_plot") as sub_reporter:
@@ -458,7 +485,7 @@ class Trainer:
         summary_writer: Optional[SummaryWriter],
         options: TrainerOptions,
         distributed_option: DistributedOption,
-        mode: str,
+        mode: str='train_pseudo',
     ) -> bool:
         assert check_argument_types()
 
@@ -711,6 +738,125 @@ class Trainer:
             reporter.register(stats, weight)
             reporter.next()
 
+        else:
+            if distributed:
+                iterator_stop.fill_(1)
+                torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
+
+    @classmethod
+    @torch.no_grad()
+    def train_corrupt_one_epoch(
+        cls,
+        model: torch.nn.Module,
+        iterator: Iterable[Tuple[List[str], Dict[str, torch.Tensor]]],
+        scaler: Optional[GradScaler],
+        reporter: SubReporter,
+        summary_writer: Optional[SummaryWriter],
+        options: TrainerOptions,
+        distributed_option: DistributedOption,
+        mode: str='train',
+    ) -> None:
+        assert check_argument_types()
+
+        log_interval = options.log_interval
+        no_forward_run = options.no_forward_run
+        ngpu = options.ngpu
+        distributed = distributed_option.distributed
+
+        if log_interval is None:
+            try:
+                log_interval = max(len(iterator) // 20, 10)
+            except TypeError:
+                log_interval = 100
+        
+
+        model.eval()
+
+        iterator_stop = torch.tensor(0).to("cuda" if ngpu > 0 else "cpu")
+
+        start_time = time.perf_counter()
+        for iiter, (_, batch) in enumerate(
+            reporter.measure_iter_time(iterator, "iter_time"), 1
+        ):
+            assert isinstance(batch, dict), type(batch)
+
+            if distributed:
+                torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
+                if iterator_stop > 0:
+                    break
+
+            batch = to_device(batch, "cuda" if ngpu > 0 else "cpu")
+            if no_forward_run:
+                all_steps_are_invalid = False
+                continue
+
+            with autocast(scaler is not None):
+                with reporter.measure_time("forward_time"):
+                    retval = model(**batch, mode=mode)
+
+                    # Note(kamo):
+                    # Supporting two patterns for the returned value from the model
+                    #   a. dict type
+                    if isinstance(retval, dict):
+                        loss = retval["loss"]
+                        stats = retval["stats"]
+                        weight = retval["weight"]
+                        optim_idx = retval.get("optim_idx")
+                        if optim_idx is not None and not isinstance(optim_idx, int):
+                            if not isinstance(optim_idx, torch.Tensor):
+                                raise RuntimeError(
+                                    "optim_idx must be int or 1dim torch.Tensor, "
+                                    f"but got {type(optim_idx)}"
+                                )
+                            if optim_idx.dim() >= 2:
+                                raise RuntimeError(
+                                    "optim_idx must be int or 1dim torch.Tensor, "
+                                    f"but got {optim_idx.dim()}dim tensor"
+                                )
+                            if optim_idx.dim() == 1:
+                                for v in optim_idx:
+                                    if v != optim_idx[0]:
+                                        raise RuntimeError(
+                                            "optim_idx must be 1dim tensor "
+                                            "having same values for all entries"
+                                        )
+                                optim_idx = optim_idx[0].item()
+                            else:
+                                optim_idx = optim_idx.item()
+
+                    #   b. tuple or list type
+                    else:
+                        loss, stats, weight = retval
+                        optim_idx = None
+
+                stats = {k: v for k, v in stats.items() if v is not None}
+                if ngpu > 1 or distributed:
+                    p = model.module.corrupt_mat
+                    d_p = p.grad
+                    # Apply weighted averaging for loss and stats
+                    d_p = d_p * weight.type(d_p.dtype)
+
+                    # if distributed, this method can also apply all_reduce()
+                    stats, weight = recursive_average(stats, weight, distributed)
+
+                    # Now weight is summation over all workers
+                    d_p /= weight
+                if distributed:
+                    # NOTE(kamo): Multiply world_size because DistributedDataParallel
+                    # automatically normalizes the gradient by world_size.
+                    d_p *= torch.distributed.get_world_size()
+
+                p.add_(d_p, alpha=1)
+                p.grad.detach_()
+                p.grad.zero_()
+
+            reporter.register(stats, weight)
+            reporter.next()
+            if iiter % log_interval == 0:
+                logging.info(reporter.log_message(-log_interval))
+                if summary_writer is not None:
+                    reporter.tensorboard_add_scalar(summary_writer, -log_interval)
+        
         else:
             if distributed:
                 iterator_stop.fill_(1)

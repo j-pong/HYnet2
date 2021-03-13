@@ -89,7 +89,7 @@ class ESPnetASRModel(AbsESPnetModel):
             normalize_length=length_normalized_loss,
         )
 
-        self.corrupt_mat = torch.nn.Parameter(torch.eye(vocab_size, vocab_size))
+        self.corrupt_mat = torch.nn.Parameter(torch.Tensor(vocab_size, vocab_size))
 
         if report_cer or report_wer:
             self.error_calculator = ErrorCalculator(
@@ -104,7 +104,7 @@ class ESPnetASRModel(AbsESPnetModel):
         speech_lengths: torch.Tensor,
         text: torch.Tensor,
         text_lengths: torch.Tensor,
-        mode: str='train_pseudo',
+        mode: str='pseudo_train',
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
         """Frontend + Encoder + Decoder + Calc loss
 
@@ -132,55 +132,68 @@ class ESPnetASRModel(AbsESPnetModel):
 
         # 2a. Attention-decoder branch
         if self.ctc_weight == 1.0:
-            loss_att, out_att, acc_att, cer_att, wer_att = None, None, None, None
+            loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att = None, None, None, None
         else:
-            loss_att, out_att, acc_att, cer_att, wer_att = self._calc_att_loss(
+            loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att = self._calc_att_loss(
                 encoder_out, encoder_out_lens, text, text_lengths
             )
-
-        # 2b. CTC branch
-        if self.ctc_weight == 0.0:
-            loss_ctc, cer_ctc = None, None
-        else:
-            loss_ctc, cer_ctc = self._calc_ctc_loss(
-                encoder_out, encoder_out_lens, text, text_lengths
-            )
-
-        # 2c. RNN-T branch
-        if self.rnnt_decoder is not None:
-            _ = self._calc_rnnt_loss(encoder_out, encoder_out_lens, text, text_lengths)
-
-        if self.ctc_weight == 0.0:
-            loss = loss_att
-        elif self.ctc_weight == 1.0:
-            loss = loss_ctc
-        else:
-            loss = self.ctc_weight * loss_ctc + (1 - self.ctc_weight) * loss_att 
 
         if mode == 'train':
-            # NOTE(j-pong): Ohter running_update_param, i.e., mean param of the bathnorm, 
-            # will have the problem of tasks. Piz check this problem after.
-            loss *= 0.0  # remove the gradient. 
-
             # clean label X noisy label
-            grad_mat = torch.zeros_like(self.corrup_mat)
+            grad_mat = torch.zeros_like(self.corrupt_mat)
             for i in range(self.vocab_size):
-                indces = torch.range(0, self.vocab_size)[text == i]
-                grad_mat[i] = torch.softmax(out_att, dim=-1)[indces]
+                # caculate noisy distribution
+                probs = torch.softmax(out_att, dim=-1)
 
+                # prepare the mask for selecting the clean label
+                mask = ys_out_att == i
+                mask = mask.view([batch_size, -1, 1]).expand(probs.shape)
+
+                # select the distribution and give the distribution to grad_mat
+                probs_select = torch.masked_select(probs, mask)
+                probs_select = probs_select.view([-1, self.vocab_size])
+                if probs_select.shape[0] != 0:
+                    grad_mat[i] = torch.mean(probs_select, dim=0).detach()
             self.corrupt_mat.grad = -grad_mat
+
+            mean_max = self.corrupt_mat.mean(dim=-1, keepdims=True)
+            loss = (self.corrupt_mat - mean_max).square().mean(dim=-1).mean()
+
+            stats = dict(
+                loss=loss.detach()
+            )
+
         else:
+            # 2b. CTC branch
+            if self.ctc_weight == 0.0:
+                loss_ctc, cer_ctc = None, None
+            else:
+                loss_ctc, cer_ctc = self._calc_ctc_loss(
+                    encoder_out, encoder_out_lens, text, text_lengths
+                )
+
+            # 2c. RNN-T branch
+            if self.rnnt_decoder is not None:
+                _ = self._calc_rnnt_loss(encoder_out, encoder_out_lens, text, text_lengths)
+
+            if self.ctc_weight == 0.0:
+                loss = loss_att
+            elif self.ctc_weight == 1.0:
+                loss = loss_ctc
+            else:
+                loss = self.ctc_weight * loss_ctc + (1 - self.ctc_weight) * loss_att 
+
             self.corrupt_mat.grad = None
 
-        stats = dict(
-            loss=loss.detach(),
-            loss_att=loss_att.detach() if loss_att is not None else None,
-            loss_ctc=loss_ctc.detach() if loss_ctc is not None else None,
-            acc=acc_att,
-            cer=cer_att,
-            wer=wer_att,
-            cer_ctc=cer_ctc,
-        )
+            stats = dict(
+                loss=loss.detach(),
+                loss_att=loss_att.detach() if loss_att is not None else None,
+                loss_ctc=loss_ctc.detach() if loss_ctc is not None else None,
+                acc=acc_att,
+                cer=cer_att,
+                wer=wer_att,
+                cer_ctc=cer_ctc,
+            )
 
         # force_gatherable: to-device and to-tensor if scalar for DataParallel
         loss, stats, weight = force_gatherable((loss, stats, batch_size), loss.device)
@@ -270,7 +283,6 @@ class ESPnetASRModel(AbsESPnetModel):
         decoder_out, _ = self.decoder(
             encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens
         )
-        out_att = decoder_out
 
         # 2. Compute attention loss
         loss_att = self.criterion_att(decoder_out, ys_out_pad)
@@ -287,7 +299,10 @@ class ESPnetASRModel(AbsESPnetModel):
             ys_hat = decoder_out.argmax(dim=-1)
             cer_att, wer_att = self.error_calculator(ys_hat.cpu(), ys_pad.cpu())
 
-        return loss_att, out_att, acc_att, cer_att, wer_att
+        out_att = decoder_out
+        ys_out_att = ys_out_pad
+
+        return loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att
 
     def _calc_ctc_loss(
         self,

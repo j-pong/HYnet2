@@ -45,7 +45,6 @@ from espnet2.layers.abs_normalize import AbsNormalize
 from espnet2.layers.global_mvn import GlobalMVN
 from espnet2.layers.utterance_mvn import UtteranceMVN
 from espnet2.tasks.abs_task import AbsTask
-from espnet2.torch_utils.initialize import initialize
 from espnet2.train.class_choices import ClassChoices
 from espnet2.train.collate_fn import CommonCollateFn
 from espnet2.train.preprocessor import CommonPreprocessor
@@ -68,11 +67,13 @@ from espnet2.train.distributed_utils import DistributedOption
 from espnet2.utils.build_dataclass import build_dataclass
 from espnet2.utils.types import str2triple_str
 from espnet2.utils.yaml_no_alias_safe_dump import yaml_no_alias_safe_dump
+from espnet2.torch_utils.load_pretrained_model import load_pretrained_model
 
 from hynet.main_funcs.collect_stats import collect_stats
 from hynet.train.trainer import Trainer
 from hynet.asr.espnet_model import ESPnetASRModel
 from hynet.asr.decoder.rnn_decoder import RNNDecoder
+from hynet.torch_utils.initialize import initialize
 
 from espnet2.tasks.abs_task import IteratorOptions
 
@@ -368,7 +369,7 @@ class ASRTask(AbsTask):
         assert check_return_type(retval)
         return retval
 
-    @classmethod
+    @classmethod  # override the AbsTask
     def build_iter_options(
         cls,
         args: argparse.Namespace,
@@ -469,7 +470,7 @@ class ASRTask(AbsTask):
             train=train,
         )
 
-    @classmethod
+    @classmethod  # override the AbsTask
     def main_worker(cls, args: argparse.Namespace):
         assert check_argument_types()
 
