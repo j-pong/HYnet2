@@ -1,13 +1,8 @@
 batch_type: numel
-batch_bins: 14000000
 accum_grad: 1
-max_epoch: 1
 patience: 100
 # The initialization method for model parameters
 init: chainer # Don't change this initialization
-init_param: 
-    - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_epoch10/10epoch.pth:encoder:encoder
-    - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_epoch10/10epoch.pth:decoder:decoder
 best_model_criterion:
 -   - valid
     - acc
@@ -69,6 +64,27 @@ specaug_conf:
     num_time_mask: 2
 
 # Custom Settings
-stage: 2
+# stage: 1
+# max_epoch: 10
+# batch_bins: 14000000
+# unused_parameters: true
 
+# stage: 2
+# max_epoch: 1
+# batch_bins: 30000000
+# init_param: 
+#     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/10epoch.pth:encoder:encoder
+#     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/10epoch.pth:decoder:decoder
+
+# stage: 0
+# max_epoch: 2
+# batch_bins: 14000000
+# init_param: 
+#     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage2/1epoch.pth:cleaner:cleaner
+
+stage: 3
+max_epoch: 10
+batch_bins: 14000000
+init_param: 
+    - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage2/1epoch.pth:cleaner:cleaner
 unused_parameters: true

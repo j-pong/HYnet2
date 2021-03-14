@@ -33,6 +33,51 @@ else:
     def autocast(enabled=True):
         yield
 
+class LossCorrection(torch.nn.Module):
+    def __init__(
+        self,
+        vocab_size: int,
+    ):
+        super().__init__()
+        self.vocab_size = vocab_size
+
+        self.corrupt_mat = torch.nn.Parameter(torch.Tensor(vocab_size, vocab_size))
+        self.register_buffer('corrupt_label_weight', torch.Tensor(vocab_size))
+
+    def forward(
+        self,
+        out_att: torch.Tensor,
+        ys_out_att: torch.Tensor,
+    ):
+        batch_size = out_att.shape[0]
+        # clean label X noisy label
+        grad_mat = torch.zeros_like(self.corrupt_mat)
+
+        # caculate noisy distribution
+        probs = torch.softmax(out_att, dim=-1)
+
+        for i in range(self.vocab_size):
+            # prepare the mask for selecting the clean label
+            mask = ys_out_att == i
+            mask = mask.view([batch_size, -1, 1])#.expand(probs.shape)
+
+            # select the distribution and give the distribution to grad_mat
+            probs_select = torch.masked_select(probs, mask)
+            probs_select = probs_select.view([-1, self.vocab_size])
+
+            # save the results
+            if probs_select.shape[0] != 0:
+                grad_mat[i] = torch.sum(probs_select, dim=0).detach()
+            self.corrupt_label_weight[i] += probs_select.shape[0]
+        
+        # instance backward
+        self.corrupt_mat.grad = -grad_mat
+
+        # calculate perplexity loss
+        mean_max = torch.max(self.corrupt_mat, dim=-1, keepdims=True)[0]
+        loss = (self.corrupt_mat - mean_max).square().mean()
+
+        return loss
 
 class ESPnetASRModel(AbsESPnetModel):
     """CTC-attention hybrid Encoder-Decoder model"""
@@ -89,7 +134,7 @@ class ESPnetASRModel(AbsESPnetModel):
             normalize_length=length_normalized_loss,
         )
 
-        self.corrupt_mat = torch.nn.Parameter(torch.Tensor(vocab_size, vocab_size))
+        self.cleaner = LossCorrection(vocab_size)
 
         if report_cer or report_wer:
             self.error_calculator = ErrorCalculator(
@@ -104,7 +149,8 @@ class ESPnetASRModel(AbsESPnetModel):
         speech_lengths: torch.Tensor,
         text: torch.Tensor,
         text_lengths: torch.Tensor,
-        mode: str='pseudo_train',
+        stage: int=0,
+        cleaning: bool=False,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
         """Frontend + Encoder + Decoder + Calc loss
 
@@ -130,39 +176,25 @@ class ESPnetASRModel(AbsESPnetModel):
         # 1. Encoder
         encoder_out, encoder_out_lens = self.encode(speech, speech_lengths)
 
+        if stage == 3 and cleaning:
+            corrupt_mat = self.cleaner.corrupt_mat.detach()
+        else:
+            corrupt_mat = None
+
         # 2a. Attention-decoder branch
         if self.ctc_weight == 1.0:
-            loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att = None, None, None, None
+            loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att = None, None, None, None, None, None
         else:
             loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att = self._calc_att_loss(
-                encoder_out, encoder_out_lens, text, text_lengths
+                encoder_out, encoder_out_lens, text, text_lengths, corrupt_mat
             )
-
-        if mode == 'train':
-            # clean label X noisy label
-            grad_mat = torch.zeros_like(self.corrupt_mat)
-            for i in range(self.vocab_size):
-                # caculate noisy distribution
-                probs = torch.softmax(out_att, dim=-1)
-
-                # prepare the mask for selecting the clean label
-                mask = ys_out_att == i
-                mask = mask.view([batch_size, -1, 1]).expand(probs.shape)
-
-                # select the distribution and give the distribution to grad_mat
-                probs_select = torch.masked_select(probs, mask)
-                probs_select = probs_select.view([-1, self.vocab_size])
-                if probs_select.shape[0] != 0:
-                    grad_mat[i] = torch.mean(probs_select, dim=0).detach()
-            self.corrupt_mat.grad = -grad_mat
-
-            mean_max = self.corrupt_mat.mean(dim=-1, keepdims=True)
-            loss = (self.corrupt_mat - mean_max).square().mean(dim=-1).mean()
+            
+        if stage == 2:
+            loss = self.cleaner(out_att, ys_out_att)
 
             stats = dict(
                 loss=loss.detach()
             )
-
         else:
             # 2b. CTC branch
             if self.ctc_weight == 0.0:
@@ -182,8 +214,6 @@ class ESPnetASRModel(AbsESPnetModel):
                 loss = loss_ctc
             else:
                 loss = self.ctc_weight * loss_ctc + (1 - self.ctc_weight) * loss_att 
-
-            self.corrupt_mat.grad = None
 
             stats = dict(
                 loss=loss.detach(),
@@ -275,6 +305,7 @@ class ESPnetASRModel(AbsESPnetModel):
         encoder_out_lens: torch.Tensor,
         ys_pad: torch.Tensor,
         ys_pad_lens: torch.Tensor,
+        corrupt_mat: torch.Tensor,
     ):
         ys_in_pad, ys_out_pad = add_sos_eos(ys_pad, self.sos, self.eos, self.ignore_id)
         ys_in_lens = ys_pad_lens + 1
@@ -283,6 +314,9 @@ class ESPnetASRModel(AbsESPnetModel):
         decoder_out, _ = self.decoder(
             encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens
         )
+
+        if corrupt_mat is not None:
+            decoder_out = torch.matmul(decoder_out, corrupt_mat)
 
         # 2. Compute attention loss
         loss_att = self.criterion_att(decoder_out, ys_out_pad)

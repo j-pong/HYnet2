@@ -284,7 +284,7 @@ class Trainer:
             reporter.set_epoch(iepoch)
             # 1. Train and validation for one-epoch
             if trainer_options.stage == 1:
-                with reporter.observe("train_pseudo") as sub_reporter:
+                with reporter.observe("stage1_train_noisy") as sub_reporter:
                     all_steps_are_invalid = cls.train_one_epoch(
                         model=dp_model,
                         optimizers=optimizers,
@@ -295,27 +295,12 @@ class Trainer:
                         summary_writer=summary_writer,
                         options=trainer_options,
                         distributed_option=distributed_option,
-                        mode='train_pseudo',
+                        stage=trainer_options.stage,
                     )
             elif trainer_options.stage == 2:
-                # For implicit case
-                # with reporter.observe("train") as sub_reporter:
-                #     all_steps_are_invalid = cls.train_one_epoch(
-                #         model=dp_model,
-                #         optimizers=optimizers,
-                #         schedulers=schedulers,
-                #         iterator=train_iter_factory.build_iter(iepoch),
-                #         reporter=sub_reporter,
-                #         scaler=scaler,
-                #         summary_writer=summary_writer,
-                #         options=trainer_options,
-                #         distributed_option=distributed_option,
-                #         mode='train',
-                #     )
-
                 # For explicit case
-                with reporter.observe("train") as sub_reporter:
-                    cls.train_corrupt_one_epoch(
+                with reporter.observe("stage2_calc_corrmat") as sub_reporter:
+                    all_steps_are_invalid, max_iter = cls.train_corrupt_one_epoch(
                         model=dp_model,
                         iterator=train_iter_factory.build_iter(iepoch),
                         reporter=sub_reporter,
@@ -323,8 +308,49 @@ class Trainer:
                         summary_writer=summary_writer,
                         options=trainer_options,
                         distributed_option=distributed_option,
-                        mode='train',
+                        stage=trainer_options.stage,
                     )
+            elif trainer_options.stage == 3:
+                with reporter.observe("stage3_train_with_corrmat") as sub_reporter:
+                    all_steps_are_invalid = cls.train_one_epoch(
+                        model=dp_model,
+                        optimizers=optimizers,
+                        schedulers=schedulers,
+                        iterator=train_pseudo_iter_factory.build_iter(iepoch), 
+                        reporter=sub_reporter,
+                        scaler=scaler,
+                        summary_writer=summary_writer,
+                        options=trainer_options,
+                        distributed_option=distributed_option,
+                        stage=trainer_options.stage,
+                        cleaning=True,
+                    )
+            elif trainer_options.stage == 0:
+                # save the corrupt_mat to image
+                import matplotlib.pyplot as plt
+                import seaborn as sns
+
+                corrupt_mat = model.cleaner.corrupt_mat.detach().cpu().numpy().astype(np.float32)
+                sns.heatmap(np.log(corrupt_mat[:, :] + 1e-8))
+                p = Path(output_dir / "corrupt_mat" / f"{iepoch}.ep.png")
+                p.parent.mkdir(parents=True, exist_ok=True)
+                plt.savefig(p, dpi=1000)
+                plt.clf()
+
+                corrupt_label_weight = model.cleaner.corrupt_label_weight.detach().cpu().numpy().astype(np.float32)
+                plt.plot(np.log(corrupt_label_weight + 1e-8))
+                plt.xlim(0, len(corrupt_label_weight))
+                plt.grid()
+                p = Path(output_dir / "corrupt_label_weight" / f"{iepoch}.ep.png")
+                p.parent.mkdir(parents=True, exist_ok=True)
+                plt.savefig(p)
+                plt.clf()
+
+                all_steps_are_invalid = True
+
+                break
+            else:
+                RuntimeError
 
             with reporter.observe("valid") as sub_reporter:
                 cls.validate_one_epoch(
@@ -336,19 +362,6 @@ class Trainer:
                 )
 
             if not distributed_option.distributed or distributed_option.dist_rank == 0:
-                # save the corrupt_mat to image
-                import matplotlib.pyplot as plt
-
-                corrupt_mat = model.corrupt_mat.detach().cpu().numpy().astype(np.float32)
-
-                plt.imshow(corrupt_mat, aspect="auto")
-                plt.colorbar()
-
-                p = Path(output_dir / "corrupt_mat" / f"{iepoch}.ep.png")
-                p.parent.mkdir(parents=True, exist_ok=True)
-                
-                plt.savefig(p)
-
                 # att_plot doesn't support distributed
                 if plot_attention_iter_factory is not None:
                     with reporter.observe("att_plot") as sub_reporter:
@@ -485,7 +498,8 @@ class Trainer:
         summary_writer: Optional[SummaryWriter],
         options: TrainerOptions,
         distributed_option: DistributedOption,
-        mode: str='train_pseudo',
+        stage: int=1,
+        cleaning: bool=False,
     ) -> bool:
         assert check_argument_types()
 
@@ -529,7 +543,7 @@ class Trainer:
 
             with autocast(scaler is not None):
                 with reporter.measure_time("forward_time"):
-                    retval = model(**batch, mode=mode)
+                    retval = model(**batch, stage=stage, cleaning=cleaning)
 
                     # Note(kamo):
                     # Supporting two patterns for the returned value from the model
@@ -754,7 +768,7 @@ class Trainer:
         summary_writer: Optional[SummaryWriter],
         options: TrainerOptions,
         distributed_option: DistributedOption,
-        mode: str='train',
+        mode: str='corrupt_mat',
     ) -> None:
         assert check_argument_types()
 
@@ -768,7 +782,6 @@ class Trainer:
                 log_interval = max(len(iterator) // 20, 10)
             except TypeError:
                 log_interval = 100
-        
 
         model.eval()
 
@@ -829,24 +842,27 @@ class Trainer:
                         loss, stats, weight = retval
                         optim_idx = None
 
+                all_steps_are_invalid = False
                 stats = {k: v for k, v in stats.items() if v is not None}
+                # NOTE(j-pong): total number of each label calculated into model.corrupt_label_weight
                 if ngpu > 1 or distributed:
-                    p = model.module.corrupt_mat
+                    p = model.module.cleaner.corrupt_mat
                     d_p = p.grad
-                    # Apply weighted averaging for loss and stats
-                    d_p = d_p * weight.type(d_p.dtype)
+                    # # Apply weighted averaging for loss and stats
+                    # d_p = d_p * weight.type(d_p.dtype)
 
                     # if distributed, this method can also apply all_reduce()
                     stats, weight = recursive_average(stats, weight, distributed)
 
-                    # Now weight is summation over all workers
-                    d_p /= weight
+                    # # Now weight is summation over all workers
+                    # d_p /= weight
                 if distributed:
                     # NOTE(kamo): Multiply world_size because DistributedDataParallel
                     # automatically normalizes the gradient by world_size.
-                    d_p *= torch.distributed.get_world_size()
+                    # d_p *= torch.distributed.get_world_size()
+                    pass
 
-                p.add_(d_p, alpha=1)
+                p.add_(-d_p, alpha=1)
                 p.grad.detach_()
                 p.grad.zero_()
 
@@ -861,6 +877,23 @@ class Trainer:
             if distributed:
                 iterator_stop.fill_(1)
                 torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
+
+        # the number of the each label class is saved to corrupt_labe_weight
+        label_pop = model.module.cleaner.corrupt_label_weight
+        # Take mean operator to corrpution matrix 'p' 
+        # and set the row of the out-of-class label to identical label.
+        p.div_(label_pop.unsqueeze(-1))
+        for i in range(len(p.data)):
+            if label_pop[i] == 0:
+                # make identicla lable
+                ident = torch.zeros_like(p.data[i])
+                ident[i] = 1.0
+
+                p.data[i] = ident
+        p.grad.detach_()
+        p.grad.zero_()
+
+        return all_steps_are_invalid, iiter
 
     @classmethod
     @torch.no_grad()
