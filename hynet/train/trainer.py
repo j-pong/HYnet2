@@ -14,6 +14,7 @@ from typing import Sequence
 from typing import Tuple
 from typing import Union
 
+import random
 import humanfriendly
 import numpy as np
 import torch
@@ -290,6 +291,7 @@ class Trainer:
                         optimizers=optimizers,
                         schedulers=schedulers,
                         iterator=train_pseudo_iter_factory.build_iter(iepoch),
+                        aux_iterator=None,
                         reporter=sub_reporter,
                         scaler=scaler,
                         summary_writer=summary_writer,
@@ -300,7 +302,7 @@ class Trainer:
             elif trainer_options.stage == 2:
                 # For explicit case
                 with reporter.observe("stage2_calc_corrmat") as sub_reporter:
-                    all_steps_are_invalid, max_iter = cls.train_corrupt_one_epoch(
+                    all_steps_are_invalid = cls.train_corrupt_one_epoch(
                         model=dp_model,
                         iterator=train_iter_factory.build_iter(iepoch),
                         reporter=sub_reporter,
@@ -317,6 +319,7 @@ class Trainer:
                         optimizers=optimizers,
                         schedulers=schedulers,
                         iterator=train_pseudo_iter_factory.build_iter(iepoch), 
+                        aux_iterator=train_iter_factory.build_iter(iepoch),
                         reporter=sub_reporter,
                         scaler=scaler,
                         summary_writer=summary_writer,
@@ -491,6 +494,7 @@ class Trainer:
         cls,
         model: torch.nn.Module,
         iterator: Iterable[Tuple[List[str], Dict[str, torch.Tensor]]],
+        aux_iterator: Iterable[Tuple[List[str], Dict[str, torch.Tensor]]],
         optimizers: Sequence[torch.optim.Optimizer],
         schedulers: Sequence[Optional[AbsScheduler]],
         scaler: Optional[GradScaler],
@@ -526,9 +530,37 @@ class Trainer:
         iterator_stop = torch.tensor(0).to("cuda" if ngpu > 0 else "cpu")
 
         start_time = time.perf_counter()
-        for iiter, (_, batch) in enumerate(
-            reporter.measure_iter_time(iterator, "iter_time"), 1
-        ):
+        iiter = 0
+        break_flag = 0
+        iterator = iter(iterator)
+        aux_iterator = iter(aux_iterator)
+        while True:
+            # multiple iterator scheduling
+            iiter += 1
+
+            start = time.perf_counter()
+            if break_flag == 0:
+                order_iter = random.random() > 0.5
+            else:
+                # NOTE(j-pong): iterator should be bigger than aux_iterator
+                order_iter = True
+
+            try:
+                if order_iter:
+                    _, batch = iterator.next()
+                else:
+                    _, batch = aux_iterator.next()
+            except StopIteration:
+                break_flag += 1
+            t = time.perf_counter() - start
+            reporter.register({"iter_time": t})
+
+            if break_flag == 2:
+                iiter -= 1
+                break
+            cleaning = order_iter
+            
+            # start of main loop
             assert isinstance(batch, dict), type(batch)
 
             if distributed:
@@ -768,7 +800,7 @@ class Trainer:
         summary_writer: Optional[SummaryWriter],
         options: TrainerOptions,
         distributed_option: DistributedOption,
-        mode: str='corrupt_mat',
+        stage: int=2,
     ) -> None:
         assert check_argument_types()
 
@@ -893,7 +925,7 @@ class Trainer:
         p.grad.detach_()
         p.grad.zero_()
 
-        return all_steps_are_invalid, iiter
+        return all_steps_are_invalid
 
     @classmethod
     @torch.no_grad()
