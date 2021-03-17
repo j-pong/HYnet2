@@ -326,7 +326,7 @@ class Trainer:
                         options=trainer_options,
                         distributed_option=distributed_option,
                         stage=trainer_options.stage,
-                        cleaning=True,
+                        label_cleaning=False, 
                     )
             elif trainer_options.stage == 0:
                 # save the corrupt_mat to image
@@ -503,7 +503,7 @@ class Trainer:
         options: TrainerOptions,
         distributed_option: DistributedOption,
         stage: int=1,
-        cleaning: bool=False,
+        label_cleaning: bool=False,
     ) -> bool:
         assert check_argument_types()
 
@@ -532,6 +532,7 @@ class Trainer:
         start_time = time.perf_counter()
         iiter = 0
         break_flag = 0
+        cleaning = False
         iterator = iter(iterator)
         aux_iterator = iter(aux_iterator)
         while True:
@@ -540,25 +541,34 @@ class Trainer:
 
             start = time.perf_counter()
             if break_flag == 0:
-                order_iter = random.random() > 0.5
+                # FIXME: hard coding for sampling ration of each dataset
+                select_prime_iter = random.random() > 0.12
             else:
-                # NOTE(j-pong): iterator should be bigger than aux_iterator
-                order_iter = True
+                if break_flag == 1:
+                    select_prime_iter = True
+                elif break_flag == 2:
+                    select_prime_iter = False
+                else:
+                    raise RuntimeError(f"{break_flag} is wrong to loop. Fix the loop variable.")
 
             try:
-                if order_iter:
+                if select_prime_iter:
                     _, batch = iterator.next()
+                    cleaning = label_cleaning
                 else:
                     _, batch = aux_iterator.next()
+                    cleaning = False
             except StopIteration:
-                break_flag += 1
+                if select_prime_iter:
+                    break_flag += 2
+                else:
+                    break_flag += 1
             t = time.perf_counter() - start
             reporter.register({"iter_time": t})
 
-            if break_flag == 2:
+            if break_flag == 3:
                 iiter -= 1
                 break
-            cleaning = order_iter
             
             # start of main loop
             assert isinstance(batch, dict), type(batch)

@@ -83,7 +83,7 @@ specaug_conf:
 #     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage2/1epoch.pth:cleaner:cleaner
 
 stage: 3
-max_epoch: 10
+max_epoch: 24
 batch_bins: 14000000
 init_param: 
     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage2/1epoch.pth:cleaner:cleaner
