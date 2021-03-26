@@ -1,5 +1,4 @@
 batch_type: numel
-accum_grad: 1
 patience: 100
 # The initialization method for model parameters
 init: chainer # Don't change this initialization
@@ -64,10 +63,14 @@ specaug_conf:
     num_time_mask: 2
 
 # Custom Settings
+
+# Exp1. Gold loss correcrion
+
 # stage: 1
 # max_epoch: 10
 # batch_bins: 14000000
 # unused_parameters: true
+# transition_cleaner: false
 
 # stage: 2
 # max_epoch: 1
@@ -75,16 +78,41 @@ specaug_conf:
 # init_param: 
 #     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/10epoch.pth:encoder:encoder
 #     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/10epoch.pth:decoder:decoder
+# transition_cleaner: true
 
 # stage: 0
 # max_epoch: 2
 # batch_bins: 14000000
 # init_param: 
 #     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage2/1epoch.pth:cleaner:cleaner
+# transition_cleaner: true
 
+# stage: 3
+# max_epoch: 24
+# batch_bins: 14000000
+# init_param: 
+#     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage2/1epoch.pth:cleaner:cleaner
+# unused_parameters: true
+# transition_cleaner: true
+
+# Exp2. Fusion with the language model
 stage: 3
-max_epoch: 24
-batch_bins: 14000000
+max_epoch: 10
+batch_bins: 8000000
+accum_grad: 2
+
+lm: transformer
+lm_conf:
+    pos_enc: null
+    embed_unit: 128
+    att_unit: 512
+    head: 8
+    unit: 2048
+    layer: 16
+    dropout_rate: 0.0
 init_param: 
-    - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage2/1epoch.pth:cleaner:cleaner
-unused_parameters: true
+    - exp/lm_train_lm_transformer2_en_bpe5000/valid.loss.ave_10best.pth:lm:lm
+freeze_param:
+    - lm
+transition_cleaner: false
+# unused_parameters: true

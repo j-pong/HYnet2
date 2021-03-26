@@ -13,7 +13,7 @@ lm_conf:
 # optimization related
 grad_clip: 5.0
 batch_type: numel
-batch_bins: 500000000
+batch_bins: 200000000
 accum_grad: 2
 max_epoch: 25
 
@@ -29,3 +29,6 @@ best_model_criterion:
     - loss
     - min
 keep_nbest_models: 10  # 10 is good.
+
+# init_param: 
+#     - exp/lm_train_lm_transformer2_en_bpe5000/valid.loss.ave_10best.pth:lm:lm

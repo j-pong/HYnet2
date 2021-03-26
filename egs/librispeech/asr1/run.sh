@@ -10,16 +10,15 @@ train_pseudo_set="train_860_pseudo"
 valid_set="dev"
 test_sets="test_clean test_other dev_clean dev_other"
 
-# asr_config=conf/tuning/train_asr_transformer3.yaml
 asr_config=conf/tuning/train_asr_lstm.yaml
-# lm_config=conf/tuning/train_lm_transformer2.yaml
+lm_config=conf/tuning/train_lm_transformer2.yaml
 inference_config=conf/decode_asr.yaml
 
 # --speed_perturb_factors "0.9 1.0 1.1" \
 # --lm_config "${lm_config}" \
 # --lm_train_text "data/${train_set}/text data/local/other_text/text" \
 
-./asr.sh \
+./asr_glc.sh \
     --audio_format flac.ark \
     --lang en \
     --ngpu 3 \
@@ -28,6 +27,8 @@ inference_config=conf/decode_asr.yaml
     --max_wav_duration 30 \
     --asr_config "${asr_config}" \
     --use_lm false \
+    --lm_config "${lm_config}" \
+    --lm_train_text "data/train_960/text data/local/other_text/text" \
     --inference_config "${inference_config}" \
     --train_set "${train_set}" \
     --train_pseudo_set "${train_pseudo_set}" \

@@ -285,7 +285,7 @@ class Trainer:
             reporter.set_epoch(iepoch)
             # 1. Train and validation for one-epoch
             if trainer_options.stage == 1:
-                with reporter.observe("stage1_train_noisy") as sub_reporter:
+                with reporter.observe("train_noisy") as sub_reporter:
                     all_steps_are_invalid = cls.train_one_epoch(
                         model=dp_model,
                         optimizers=optimizers,
@@ -297,12 +297,11 @@ class Trainer:
                         summary_writer=summary_writer,
                         options=trainer_options,
                         distributed_option=distributed_option,
-                        stage=trainer_options.stage,
                     )
             elif trainer_options.stage == 2:
                 # For explicit case
-                with reporter.observe("stage2_calc_corrmat") as sub_reporter:
-                    all_steps_are_invalid = cls.train_corrupt_one_epoch(
+                with reporter.observe("calc_corrmat") as sub_reporter:
+                    all_steps_are_invalid = cls.train_transition_one_epoch(
                         model=dp_model,
                         iterator=train_iter_factory.build_iter(iepoch),
                         reporter=sub_reporter,
@@ -313,7 +312,7 @@ class Trainer:
                         stage=trainer_options.stage,
                     )
             elif trainer_options.stage == 3:
-                with reporter.observe("stage3_train_with_corrmat") as sub_reporter:
+                with reporter.observe("train_clean_and_noisy") as sub_reporter:
                     all_steps_are_invalid = cls.train_one_epoch(
                         model=dp_model,
                         optimizers=optimizers,
@@ -325,8 +324,6 @@ class Trainer:
                         summary_writer=summary_writer,
                         options=trainer_options,
                         distributed_option=distributed_option,
-                        stage=trainer_options.stage,
-                        label_cleaning=False, 
                     )
             elif trainer_options.stage == 0:
                 # save the corrupt_mat to image
@@ -502,8 +499,6 @@ class Trainer:
         summary_writer: Optional[SummaryWriter],
         options: TrainerOptions,
         distributed_option: DistributedOption,
-        stage: int=1,
-        label_cleaning: bool=False,
     ) -> bool:
         assert check_argument_types()
 
@@ -531,10 +526,12 @@ class Trainer:
 
         start_time = time.perf_counter()
         iiter = 0
-        break_flag = 0
-        cleaning = False
         iterator = iter(iterator)
-        aux_iterator = iter(aux_iterator)
+        if aux_iterator is not None:
+            break_flag = 0
+            aux_iterator = iter(aux_iterator)
+        else:
+            break_flag = 1
         while True:
             # multiple iterator scheduling
             iiter += 1
@@ -554,10 +551,8 @@ class Trainer:
             try:
                 if select_prime_iter:
                     _, batch = iterator.next()
-                    cleaning = label_cleaning
                 else:
                     _, batch = aux_iterator.next()
-                    cleaning = False
             except StopIteration:
                 if select_prime_iter:
                     break_flag += 2
@@ -585,7 +580,9 @@ class Trainer:
 
             with autocast(scaler is not None):
                 with reporter.measure_time("forward_time"):
-                    retval = model(**batch, stage=stage, cleaning=cleaning)
+                    retval = model(
+                        **batch, 
+                        noisy_label_flag=select_prime_iter)
 
                     # Note(kamo):
                     # Supporting two patterns for the returned value from the model
@@ -801,7 +798,7 @@ class Trainer:
 
     @classmethod
     @torch.no_grad()
-    def train_corrupt_one_epoch(
+    def train_transition_one_epoch(
         cls,
         model: torch.nn.Module,
         iterator: Iterable[Tuple[List[str], Dict[str, torch.Tensor]]],
@@ -810,7 +807,6 @@ class Trainer:
         summary_writer: Optional[SummaryWriter],
         options: TrainerOptions,
         distributed_option: DistributedOption,
-        stage: int=2,
     ) -> None:
         assert check_argument_types()
 
@@ -847,7 +843,7 @@ class Trainer:
 
             with autocast(scaler is not None):
                 with reporter.measure_time("forward_time"):
-                    retval = model(**batch, mode=mode)
+                    retval = model(**batch, train_transition=True)
 
                     # Note(kamo):
                     # Supporting two patterns for the returned value from the model

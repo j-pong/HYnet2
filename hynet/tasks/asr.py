@@ -77,6 +77,11 @@ from hynet.torch_utils.initialize import initialize
 
 from espnet2.tasks.abs_task import IteratorOptions
 
+from espnet2.lm.abs_model import AbsLM
+from espnet2.lm.espnet_model import ESPnetLanguageModel
+from espnet2.lm.seq_rnn_lm import SequentialRNNLM
+from espnet2.lm.transformer_lm import TransformerLM
+
 frontend_choices = ClassChoices(
     name="frontend",
     classes=dict(default=DefaultFrontend, sliding_window=SlidingWindow),
@@ -135,6 +140,16 @@ decoder_choices = ClassChoices(
     type_check=AbsDecoder,
     default="rnn",
 )
+lm_choices = ClassChoices(
+    "lm",
+    classes=dict(
+        seq_rnn=SequentialRNNLM,
+        transformer=TransformerLM,
+    ),
+    type_check=AbsLM,
+    default=None,
+    optional=True,
+)
 
 
 class ASRTask(AbsTask):
@@ -155,6 +170,8 @@ class ASRTask(AbsTask):
         encoder_choices,
         # --decoder and --decoder_conf
         decoder_choices,
+        # --lm and --lm_conf
+        lm_choices,
     ]
 
     # If you need to modify train() or eval() procedures, change Trainer class here
@@ -187,6 +204,12 @@ class ASRTask(AbsTask):
             type=int,
             default=1,
             help="The train stage for SSL",
+        )
+        group.add_argument(
+            "--transition_cleaner",
+            type=str2bool,
+            default=False,
+            help="",
         )
         group.add_argument(
             "--init",
@@ -739,6 +762,16 @@ class ASRTask(AbsTask):
             raise RuntimeError("token_list must be str or list")
         vocab_size = len(token_list)
         logging.info(f"Vocabulary size: {vocab_size }")
+        # 0, cleaner for noisy label
+        if args.lm is not None:
+            lm_class = lm_choices.get_class(args.lm)
+            lm = lm_class(vocab_size=vocab_size, **args.lm_conf)
+        else:
+            lm = None
+        if args.transition_cleaner:
+            cleaner = LossCorrection(vocab_size)
+        else:
+            cleaner = None
 
         # 1. frontend
         if args.input_size is None:
@@ -804,6 +837,8 @@ class ASRTask(AbsTask):
             specaug=specaug,
             normalize=normalize,
             preencoder=preencoder,
+            lm=lm,
+            cleaner=cleaner,
             encoder=encoder,
             decoder=decoder,
             ctc=ctc,
@@ -819,3 +854,49 @@ class ASRTask(AbsTask):
 
         assert check_return_type(model)
         return model
+
+class LossCorrection(torch.nn.Module):
+    def __init__(
+        self,
+        vocab_size: int,
+    ):
+        super().__init__()
+        self.vocab_size = vocab_size
+
+        self.corrupt_mat = torch.nn.Parameter(torch.Tensor(vocab_size, vocab_size))
+        self.register_buffer('corrupt_label_weight', torch.Tensor(vocab_size))
+
+    def forward(
+        self,
+        out_att: torch.Tensor,
+        ys_out_att: torch.Tensor,
+    ):
+        batch_size = out_att.shape[0]
+        # clean label X noisy label
+        grad_mat = torch.zeros_like(self.corrupt_mat)
+
+        # caculate noisy distribution
+        probs = torch.softmax(out_att, dim=-1)
+
+        for i in range(self.vocab_size):
+            # prepare the mask for selecting the clean label
+            mask = ys_out_att == i
+            mask = mask.view([batch_size, -1, 1])#.expand(probs.shape)
+
+            # select the distribution and give the distribution to grad_mat
+            probs_select = torch.masked_select(probs, mask)
+            probs_select = probs_select.view([-1, self.vocab_size])
+
+            # save the results
+            if probs_select.shape[0] != 0:
+                grad_mat[i] = torch.sum(probs_select, dim=0).detach()
+            self.corrupt_label_weight[i] += probs_select.shape[0]
+        
+        # instance backward
+        self.corrupt_mat.grad = -grad_mat
+
+        # calculate perplexity loss
+        mean_max = torch.max(self.corrupt_mat, dim=-1, keepdims=True)[0]
+        loss = (self.corrupt_mat - mean_max).square().mean()
+
+        return loss

@@ -60,8 +60,8 @@ def initialize(model: torch.nn.Module, init: str):
                 mod.espnet_initialization_fn()
 
         # these lines for corruption matrix
-        model.cleaner.corrupt_mat.data.fill_(0.0)
-        model.cleaner.corrupt_label_weight.data.fill_(0.0)
+        # model.cleaner.corrupt_mat.data.fill_(0.0)
+        # model.cleaner.corrupt_label_weight.data.fill_(0.0)
 
     else:
         # weight init
