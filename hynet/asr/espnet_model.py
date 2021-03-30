@@ -139,9 +139,9 @@ class ESPnetASRModel(AbsESPnetModel):
 
         # 2a. Attention-decoder branch
         if self.ctc_weight == 1.0:
-            loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att = None, None, None, None, None, None
+            loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att, repl_ratio = None, None, None, None, None, None, None
         else:
-            loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att = self._calc_att_loss(
+            loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att, repl_ratio = self._calc_att_loss(
                 encoder_out, encoder_out_lens, text, text_lengths, noisy_label_flag
             )            
             
@@ -174,6 +174,7 @@ class ESPnetASRModel(AbsESPnetModel):
                 cer=cer_att,
                 wer=wer_att,
                 cer_ctc=cer_ctc,
+                repl_ratio=repl_ratio
             )
         else:
             loss = self.cleaner(out_att, ys_out_att)
@@ -294,42 +295,45 @@ class ESPnetASRModel(AbsESPnetModel):
             ignore_label=self.ignore_id,
         )
 
+        repl_ratio = 0.0
+        out_att = None
+        ys_out_att = None
         if noisy_label_flag:
-            if self.lm is not None:
-                # Lnaguage model probability
-                with torch.no_grad():
-                    ys_out_pad_lm, _ = self.lm(ys_in_pad, None)
-                    ys_out_pad_lm = torch.softmax(ys_out_pad_lm, dim=-1).detach()
-
-                # Caculate kldivergence loss 
-                batch_size = decoder_out.size(0)
-                x = decoder_out.view(-1, self.vocab_size)
-                target = ys_out_pad_lm.view(-1, self.vocab_size)
-                
-                with torch.no_grad():
-                    # ignore part is from the noisy target
-                    ignore = ys_out_pad.view(-1, 1) == self.ignore_id  # (B,)
-                    total = len(ys_out_pad) - ignore.sum().item()
-                    x = x.masked_fill(ignore, 0)  # avoid -1 index
-
-                kl = self.criterion_boot(torch.log_softmax(x, dim=1), target)
-                denom = total if self.normalize_length else batch_size
-                loss_att = loss_att + kl.masked_fill(ignore.unsqueeze(1), 0).sum() / denom 
-                loss_att = loss_att / 2
-
-                out_att = None
-                ys_out_att = None
-                
-            elif self.cleaner is not None:
+            if self.cleaner is not None:
                 decoder_out = torch.matmul(decoder_out, corrupt_mat)
 
                 out_att = decoder_out
                 ys_out_att = ys_out_pad
-            else:
-                pass
-        else:
-            out_att = None
-            ys_out_att = None
+
+            elif self.lm is not None:
+                # Lnaguage model probability
+                lm_out, _ = self.lm(ys_in_pad, None)
+
+                lm_out_prob = torch.softmax(lm_out, dim=-1)
+                decoder_out_prob = torch.softmax(decoder_out, dim=-1)
+                total_out_prob = 0.5 * lm_out_prob + decoder_out_prob
+
+                ignore = ys_out_pad.view(-1) == self.ignore_id
+
+                repl_ratio = (decoder_out_prob.argmax(dim=-1) == total_out_prob.argmax(dim=-1)).float().view(-1)
+                repl_ratio = repl_ratio.masked_fill(ignore, 0)
+                total = len(ys_out_pad.view(-1)) - ignore.sum().item()
+                repl_ratio = repl_ratio.sum() / total
+
+                # batch_size = decoder_out.size(0)
+                # x = decoder_out.view(-1, self.vocab_size)
+                # target = ys_out_pad_lm.view(-1, self.vocab_size)
+                
+                # with torch.no_grad():
+                #     # ignore part is from the noisy target
+                #     ignore = ys_out_pad.view(-1, 1) == self.ignore_id  # (B,)
+                #     total = len(ys_out_pad) - ignore.sum().item()
+                #     x = x.masked_fill(ignore, 0)  # avoid -1 index
+
+                # kl = self.criterion_boot(torch.log_softmax(x, dim=1), target)
+                # denom = total if self.normalize_length else batch_size
+                # loss_att = loss_att + kl.masked_fill(ignore.unsqueeze(1), 0).sum() / denom 
+                # loss_att = loss_att / 2        
 
         # Compute cer/wer using attention-decoder
         if self.training or self.error_calculator is None:
@@ -338,7 +342,7 @@ class ESPnetASRModel(AbsESPnetModel):
             ys_hat = decoder_out.argmax(dim=-1)
             cer_att, wer_att = self.error_calculator(ys_hat.cpu(), ys_pad.cpu())
 
-        return loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att
+        return loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att, repl_ratio
 
     def _calc_ctc_loss(
         self,

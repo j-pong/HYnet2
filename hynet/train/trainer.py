@@ -748,56 +748,6 @@ class Trainer:
 
     @classmethod
     @torch.no_grad()
-    def validate_one_epoch(
-        cls,
-        model: torch.nn.Module,
-        iterator: Iterable[Dict[str, torch.Tensor]],
-        reporter: SubReporter,
-        options: TrainerOptions,
-        distributed_option: DistributedOption,
-    ) -> None:
-        assert check_argument_types()
-        ngpu = options.ngpu
-        no_forward_run = options.no_forward_run
-        distributed = distributed_option.distributed
-
-        model.eval()
-
-        # [For distributed] Because iteration counts are not always equals between
-        # processes, send stop-flag to the other processes if iterator is finished
-        iterator_stop = torch.tensor(0).to("cuda" if ngpu > 0 else "cpu")
-        for (_, batch) in iterator:
-            assert isinstance(batch, dict), type(batch)
-            if distributed:
-                torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
-                if iterator_stop > 0:
-                    break
-
-            batch = to_device(batch, "cuda" if ngpu > 0 else "cpu")
-            if no_forward_run:
-                continue
-
-            retval = model(**batch)
-            if isinstance(retval, dict):
-                stats = retval["stats"]
-                weight = retval["weight"]
-            else:
-                _, stats, weight = retval
-            if ngpu > 1 or distributed:
-                # Apply weighted averaging for stats.
-                # if distributed, this method can also apply all_reduce()
-                stats, weight = recursive_average(stats, weight, distributed)
-
-            reporter.register(stats, weight)
-            reporter.next()
-
-        else:
-            if distributed:
-                iterator_stop.fill_(1)
-                torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
-
-    @classmethod
-    @torch.no_grad()
     def train_transition_one_epoch(
         cls,
         model: torch.nn.Module,
@@ -932,6 +882,56 @@ class Trainer:
         p.grad.zero_()
 
         return all_steps_are_invalid
+
+    @classmethod
+    @torch.no_grad()
+    def validate_one_epoch(
+        cls,
+        model: torch.nn.Module,
+        iterator: Iterable[Dict[str, torch.Tensor]],
+        reporter: SubReporter,
+        options: TrainerOptions,
+        distributed_option: DistributedOption,
+    ) -> None:
+        assert check_argument_types()
+        ngpu = options.ngpu
+        no_forward_run = options.no_forward_run
+        distributed = distributed_option.distributed
+
+        model.eval()
+
+        # [For distributed] Because iteration counts are not always equals between
+        # processes, send stop-flag to the other processes if iterator is finished
+        iterator_stop = torch.tensor(0).to("cuda" if ngpu > 0 else "cpu")
+        for (_, batch) in iterator:
+            assert isinstance(batch, dict), type(batch)
+            if distributed:
+                torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
+                if iterator_stop > 0:
+                    break
+
+            batch = to_device(batch, "cuda" if ngpu > 0 else "cpu")
+            if no_forward_run:
+                continue
+
+            retval = model(**batch)
+            if isinstance(retval, dict):
+                stats = retval["stats"]
+                weight = retval["weight"]
+            else:
+                _, stats, weight = retval
+            if ngpu > 1 or distributed:
+                # Apply weighted averaging for stats.
+                # if distributed, this method can also apply all_reduce()
+                stats, weight = recursive_average(stats, weight, distributed)
+
+            reporter.register(stats, weight)
+            reporter.next()
+
+        else:
+            if distributed:
+                iterator_stop.fill_(1)
+                torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
 
     @classmethod
     @torch.no_grad()
