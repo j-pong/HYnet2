@@ -18,7 +18,7 @@ inference_config=conf/decode_asr.yaml
 # --lm_config "${lm_config}" \
 # --lm_train_text "data/${train_set}/text data/local/other_text/text" \
 
-./asr_glc.sh \
+./asr_semi.sh \
     --audio_format flac.ark \
     --lang en \
     --ngpu 3 \

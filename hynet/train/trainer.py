@@ -284,13 +284,15 @@ class Trainer:
 
             reporter.set_epoch(iepoch)
             # 1. Train and validation for one-epoch
+            noisy_iterator = train_pseudo_iter_factory.build_iter(iepoch)
+            clean_iterator = train_iter_factory.build_iter(iepoch)
             if trainer_options.stage == 1:
-                with reporter.observe("train_noisy") as sub_reporter:
+                with reporter.observe("train_clean") as sub_reporter:
                     all_steps_are_invalid = cls.train_one_epoch(
                         model=dp_model,
                         optimizers=optimizers,
                         schedulers=schedulers,
-                        iterator=train_pseudo_iter_factory.build_iter(iepoch),
+                        iterator=clean_iterator,
                         aux_iterator=None,
                         reporter=sub_reporter,
                         scaler=scaler,
@@ -299,17 +301,13 @@ class Trainer:
                         distributed_option=distributed_option,
                     )
             elif trainer_options.stage == 2:
-                # For explicit case
-                with reporter.observe("calc_corrmat") as sub_reporter:
-                    all_steps_are_invalid = cls.train_transition_one_epoch(
+                with reporter.observe("validate_confidence") as sub_reporter:
+                    all_steps_are_invalid = cls.validate_confidence_one_epoch(
                         model=dp_model,
-                        iterator=train_iter_factory.build_iter(iepoch),
+                        iterator=noisy_iterator,
                         reporter=sub_reporter,
-                        scaler=scaler,
-                        summary_writer=summary_writer,
                         options=trainer_options,
                         distributed_option=distributed_option,
-                        stage=trainer_options.stage,
                     )
             elif trainer_options.stage == 3:
                 with reporter.observe("train_clean_and_noisy") as sub_reporter:
@@ -317,38 +315,14 @@ class Trainer:
                         model=dp_model,
                         optimizers=optimizers,
                         schedulers=schedulers,
-                        iterator=train_pseudo_iter_factory.build_iter(iepoch), 
-                        aux_iterator=train_iter_factory.build_iter(iepoch),
+                        iterator=clean_iterator, 
+                        aux_iterator=noisy_iterator,
                         reporter=sub_reporter,
                         scaler=scaler,
                         summary_writer=summary_writer,
                         options=trainer_options,
                         distributed_option=distributed_option,
                     )
-            elif trainer_options.stage == 0:
-                # save the corrupt_mat to image
-                import matplotlib.pyplot as plt
-                import seaborn as sns
-
-                corrupt_mat = model.cleaner.corrupt_mat.detach().cpu().numpy().astype(np.float32)
-                sns.heatmap(np.log(corrupt_mat[:, :] + 1e-8))
-                p = Path(output_dir / "corrupt_mat" / f"{iepoch}.ep.png")
-                p.parent.mkdir(parents=True, exist_ok=True)
-                plt.savefig(p, dpi=1000)
-                plt.clf()
-
-                corrupt_label_weight = model.cleaner.corrupt_label_weight.detach().cpu().numpy().astype(np.float32)
-                plt.plot(np.log(corrupt_label_weight + 1e-8))
-                plt.xlim(0, len(corrupt_label_weight))
-                plt.grid()
-                p = Path(output_dir / "corrupt_label_weight" / f"{iepoch}.ep.png")
-                p.parent.mkdir(parents=True, exist_ok=True)
-                plt.savefig(p)
-                plt.clf()
-
-                all_steps_are_invalid = True
-
-                break
             else:
                 RuntimeError
 
@@ -491,7 +465,7 @@ class Trainer:
         cls,
         model: torch.nn.Module,
         iterator: Iterable[Tuple[List[str], Dict[str, torch.Tensor]]],
-        aux_iterator: Iterable[Tuple[List[str], Dict[str, torch.Tensor]]],
+        aux_iterator,
         optimizers: Sequence[torch.optim.Optimizer],
         schedulers: Sequence[Optional[AbsScheduler]],
         scaler: Optional[GradScaler],
@@ -558,6 +532,7 @@ class Trainer:
                     break_flag += 2
                 else:
                     break_flag += 1
+            noisy_label_flag = not select_prime_iter
             t = time.perf_counter() - start
             reporter.register({"iter_time": t})
 
@@ -582,7 +557,7 @@ class Trainer:
                 with reporter.measure_time("forward_time"):
                     retval = model(
                         **batch, 
-                        noisy_label_flag=select_prime_iter)
+                        noisy_label_flag=noisy_label_flag)
 
                     # Note(kamo):
                     # Supporting two patterns for the returned value from the model
@@ -748,143 +723,6 @@ class Trainer:
 
     @classmethod
     @torch.no_grad()
-    def train_transition_one_epoch(
-        cls,
-        model: torch.nn.Module,
-        iterator: Iterable[Tuple[List[str], Dict[str, torch.Tensor]]],
-        scaler: Optional[GradScaler],
-        reporter: SubReporter,
-        summary_writer: Optional[SummaryWriter],
-        options: TrainerOptions,
-        distributed_option: DistributedOption,
-    ) -> None:
-        assert check_argument_types()
-
-        log_interval = options.log_interval
-        no_forward_run = options.no_forward_run
-        ngpu = options.ngpu
-        distributed = distributed_option.distributed
-
-        if log_interval is None:
-            try:
-                log_interval = max(len(iterator) // 20, 10)
-            except TypeError:
-                log_interval = 100
-
-        model.eval()
-
-        iterator_stop = torch.tensor(0).to("cuda" if ngpu > 0 else "cpu")
-
-        start_time = time.perf_counter()
-        for iiter, (_, batch) in enumerate(
-            reporter.measure_iter_time(iterator, "iter_time"), 1
-        ):
-            assert isinstance(batch, dict), type(batch)
-
-            if distributed:
-                torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
-                if iterator_stop > 0:
-                    break
-
-            batch = to_device(batch, "cuda" if ngpu > 0 else "cpu")
-            if no_forward_run:
-                all_steps_are_invalid = False
-                continue
-
-            with autocast(scaler is not None):
-                with reporter.measure_time("forward_time"):
-                    retval = model(**batch, train_transition=True)
-
-                    # Note(kamo):
-                    # Supporting two patterns for the returned value from the model
-                    #   a. dict type
-                    if isinstance(retval, dict):
-                        loss = retval["loss"]
-                        stats = retval["stats"]
-                        weight = retval["weight"]
-                        optim_idx = retval.get("optim_idx")
-                        if optim_idx is not None and not isinstance(optim_idx, int):
-                            if not isinstance(optim_idx, torch.Tensor):
-                                raise RuntimeError(
-                                    "optim_idx must be int or 1dim torch.Tensor, "
-                                    f"but got {type(optim_idx)}"
-                                )
-                            if optim_idx.dim() >= 2:
-                                raise RuntimeError(
-                                    "optim_idx must be int or 1dim torch.Tensor, "
-                                    f"but got {optim_idx.dim()}dim tensor"
-                                )
-                            if optim_idx.dim() == 1:
-                                for v in optim_idx:
-                                    if v != optim_idx[0]:
-                                        raise RuntimeError(
-                                            "optim_idx must be 1dim tensor "
-                                            "having same values for all entries"
-                                        )
-                                optim_idx = optim_idx[0].item()
-                            else:
-                                optim_idx = optim_idx.item()
-
-                    #   b. tuple or list type
-                    else:
-                        loss, stats, weight = retval
-                        optim_idx = None
-
-                all_steps_are_invalid = False
-                stats = {k: v for k, v in stats.items() if v is not None}
-                # NOTE(j-pong): total number of each label calculated into model.corrupt_label_weight
-                if ngpu > 1 or distributed:
-                    p = model.module.cleaner.corrupt_mat
-                    d_p = p.grad
-                    # # Apply weighted averaging for loss and stats
-                    # d_p = d_p * weight.type(d_p.dtype)
-
-                    # if distributed, this method can also apply all_reduce()
-                    stats, weight = recursive_average(stats, weight, distributed)
-
-                    # # Now weight is summation over all workers
-                    # d_p /= weight
-                if distributed:
-                    # NOTE(kamo): Multiply world_size because DistributedDataParallel
-                    # automatically normalizes the gradient by world_size.
-                    # d_p *= torch.distributed.get_world_size()
-                    pass
-
-                p.add_(-d_p, alpha=1)
-                p.grad.detach_()
-                p.grad.zero_()
-
-            reporter.register(stats, weight)
-            reporter.next()
-            if iiter % log_interval == 0:
-                logging.info(reporter.log_message(-log_interval))
-                if summary_writer is not None:
-                    reporter.tensorboard_add_scalar(summary_writer, -log_interval)
-        
-        else:
-            if distributed:
-                iterator_stop.fill_(1)
-                torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
-
-        # the number of the each label class is saved to corrupt_labe_weight
-        label_pop = model.module.cleaner.corrupt_label_weight
-        # Take mean operator to corrpution matrix 'p' 
-        # and set the row of the out-of-class label to identical label.
-        p.div_(label_pop.unsqueeze(-1))
-        for i in range(len(p.data)):
-            if label_pop[i] == 0:
-                # make identicla lable
-                ident = torch.zeros_like(p.data[i])
-                ident[i] = 1.0
-
-                p.data[i] = ident
-        p.grad.detach_()
-        p.grad.zero_()
-
-        return all_steps_are_invalid
-
-    @classmethod
-    @torch.no_grad()
     def validate_one_epoch(
         cls,
         model: torch.nn.Module,
@@ -924,6 +762,63 @@ class Trainer:
                 # Apply weighted averaging for stats.
                 # if distributed, this method can also apply all_reduce()
                 stats, weight = recursive_average(stats, weight, distributed)
+
+            reporter.register(stats, weight)
+            reporter.next()
+
+        else:
+            if distributed:
+                iterator_stop.fill_(1)
+                torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
+
+    @classmethod
+    @torch.no_grad()
+    def validate_confidence_one_epoch(
+        cls,
+        model: torch.nn.Module,
+        iterator: Iterable[Dict[str, torch.Tensor]],
+        reporter: SubReporter,
+        options: TrainerOptions,
+        distributed_option: DistributedOption,
+    ) -> None:
+        assert check_argument_types()
+        ngpu = options.ngpu
+        no_forward_run = options.no_forward_run
+        distributed = distributed_option.distributed
+
+        model.eval()
+
+        min, max, mean = None, None, None
+
+        # [For distributed] Because iteration counts are not always equals between
+        # processes, send stop-flag to the other processes if iterator is finished
+        iterator_stop = torch.tensor(0).to("cuda" if ngpu > 0 else "cpu")
+        for (_, batch) in iterator:
+            assert isinstance(batch, dict), type(batch)
+            if distributed:
+                torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
+                if iterator_stop > 0:
+                    break
+
+            batch = to_device(batch, "cuda" if ngpu > 0 else "cpu")
+            if no_forward_run:
+                continue
+
+            retval = model(**batch)
+            if isinstance(retval, dict):
+                stats = retval["stats"]
+                weight = retval["weight"]
+            else:
+                _, stats, weight = retval
+            if ngpu > 1 or distributed:
+                # Apply weighted averaging for stats.
+                # if distributed, this method can also apply all_reduce()
+                stats, weight = recursive_average(stats, weight, distributed)
+            
+            # # inspect the min, max and mean of the confidence
+            # min = stats['min'] = 
+            # max = stats['max']
+            # mean = stats['mean']  
 
             reporter.register(stats, weight)
             reporter.next()
@@ -1006,3 +901,165 @@ class Trainer:
                             f"{k}_{id_}", fig, reporter.get_epoch()
                         )
             reporter.next()
+
+# @classmethod
+# @torch.no_grad()
+# def train_transition_one_epoch(
+#     cls,
+#     model: torch.nn.Module,
+#     iterator: Iterable[Tuple[List[str], Dict[str, torch.Tensor]]],
+#     scaler: Optional[GradScaler],
+#     reporter: SubReporter,
+#     summary_writer: Optional[SummaryWriter],
+#     options: TrainerOptions,
+#     distributed_option: DistributedOption,
+# ) -> None:
+#     assert check_argument_types()
+
+#     log_interval = options.log_interval
+#     no_forward_run = options.no_forward_run
+#     ngpu = options.ngpu
+#     distributed = distributed_option.distributed
+
+#     if log_interval is None:
+#         try:
+#             log_interval = max(len(iterator) // 20, 10)
+#         except TypeError:
+#             log_interval = 100
+
+#     model.eval()
+
+#     iterator_stop = torch.tensor(0).to("cuda" if ngpu > 0 else "cpu")
+
+#     start_time = time.perf_counter()
+#     for iiter, (_, batch) in enumerate(
+#         reporter.measure_iter_time(iterator, "iter_time"), 1
+#     ):
+#         assert isinstance(batch, dict), type(batch)
+
+#         if distributed:
+#             torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
+#             if iterator_stop > 0:
+#                 break
+
+#         batch = to_device(batch, "cuda" if ngpu > 0 else "cpu")
+#         if no_forward_run:
+#             all_steps_are_invalid = False
+#             continue
+
+#         with autocast(scaler is not None):
+#             with reporter.measure_time("forward_time"):
+#                 retval = model(**batch, train_transition=True)
+
+#                 # Note(kamo):
+#                 # Supporting two patterns for the returned value from the model
+#                 #   a. dict type
+#                 if isinstance(retval, dict):
+#                     loss = retval["loss"]
+#                     stats = retval["stats"]
+#                     weight = retval["weight"]
+#                     optim_idx = retval.get("optim_idx")
+#                     if optim_idx is not None and not isinstance(optim_idx, int):
+#                         if not isinstance(optim_idx, torch.Tensor):
+#                             raise RuntimeError(
+#                                 "optim_idx must be int or 1dim torch.Tensor, "
+#                                 f"but got {type(optim_idx)}"
+#                             )
+#                         if optim_idx.dim() >= 2:
+#                             raise RuntimeError(
+#                                 "optim_idx must be int or 1dim torch.Tensor, "
+#                                 f"but got {optim_idx.dim()}dim tensor"
+#                             )
+#                         if optim_idx.dim() == 1:
+#                             for v in optim_idx:
+#                                 if v != optim_idx[0]:
+#                                     raise RuntimeError(
+#                                         "optim_idx must be 1dim tensor "
+#                                         "having same values for all entries"
+#                                     )
+#                             optim_idx = optim_idx[0].item()
+#                         else:
+#                             optim_idx = optim_idx.item()
+
+#                 #   b. tuple or list type
+#                 else:
+#                     loss, stats, weight = retval
+#                     optim_idx = None
+
+#             all_steps_are_invalid = False
+#             stats = {k: v for k, v in stats.items() if v is not None}
+#             # NOTE(j-pong): total number of each label calculated into model.corrupt_label_weight
+#             if ngpu > 1 or distributed:
+#                 p = model.module.cleaner.corrupt_mat
+#                 d_p = p.grad
+#                 # # Apply weighted averaging for loss and stats
+#                 # d_p = d_p * weight.type(d_p.dtype)
+
+#                 # if distributed, this method can also apply all_reduce()
+#                 stats, weight = recursive_average(stats, weight, distributed)
+
+#                 # # Now weight is summation over all workers
+#                 # d_p /= weight
+#             if distributed:
+#                 # NOTE(kamo): Multiply world_size because DistributedDataParallel
+#                 # automatically normalizes the gradient by world_size.
+#                 # d_p *= torch.distributed.get_world_size()
+#                 pass
+
+#             p.add_(-d_p, alpha=1)
+#             p.grad.detach_()
+#             p.grad.zero_()
+
+#         reporter.register(stats, weight)
+#         reporter.next()
+#         if iiter % log_interval == 0:
+#             logging.info(reporter.log_message(-log_interval))
+#             if summary_writer is not None:
+#                 reporter.tensorboard_add_scalar(summary_writer, -log_interval)
+    
+#     else:
+#         if distributed:
+#             iterator_stop.fill_(1)
+#             torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
+
+#     # the number of the each label class is saved to corrupt_labe_weight
+#     label_pop = model.module.cleaner.corrupt_label_weight
+#     # Take mean operator to corrpution matrix 'p' 
+#     # and set the row of the out-of-class label to identical label.
+#     p.div_(label_pop.unsqueeze(-1))
+#     for i in range(len(p.data)):
+#         if label_pop[i] == 0:
+#             # make identicla lable
+#             ident = torch.zeros_like(p.data[i])
+#             ident[i] = 1.0
+
+#             p.data[i] = ident
+#     p.grad.detach_()
+#     p.grad.zero_()
+
+#     return all_steps_are_invalid
+
+# elif trainer_options.stage == 0:
+#     # save the corrupt_mat to image
+#     import matplotlib.pyplot as plt
+#     import seaborn as sns
+
+#     corrupt_mat = model.cleaner.corrupt_mat.detach().cpu().numpy().astype(np.float32)
+#     sns.heatmap(np.log(corrupt_mat[:, :] + 1e-8))
+#     p = Path(output_dir / "corrupt_mat" / f"{iepoch}.ep.png")
+#     p.parent.mkdir(parents=True, exist_ok=True)
+#     plt.savefig(p, dpi=1000)
+#     plt.clf()
+
+#     corrupt_label_weight = model.cleaner.corrupt_label_weight.detach().cpu().numpy().astype(np.float32)
+#     plt.plot(np.log(corrupt_label_weight + 1e-8))
+#     plt.xlim(0, len(corrupt_label_weight))
+#     plt.grid()
+#     p = Path(output_dir / "corrupt_label_weight" / f"{iepoch}.ep.png")
+#     p.parent.mkdir(parents=True, exist_ok=True)
+#     plt.savefig(p)
+#     plt.clf()
+
+#     all_steps_are_invalid = True
+
+#     break

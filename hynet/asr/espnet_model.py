@@ -46,7 +46,6 @@ class ESPnetASRModel(AbsESPnetModel):
         normalize: Optional[AbsNormalize],
         preencoder: Optional[AbsPreEncoder],
         lm: Optional[AbsLM],
-        cleaner: Optional[torch.nn.Module],
         encoder: AbsEncoder,
         decoder: AbsDecoder,
         ctc: CTC,
@@ -99,7 +98,6 @@ class ESPnetASRModel(AbsESPnetModel):
             self.error_calculator = None
         
         # Task related
-        self.cleaner = cleaner
         self.lm = lm
         self.normalize_length = length_normalized_loss
         self.criterion_boot = torch.nn.KLDivLoss(reduction="none")
@@ -110,7 +108,6 @@ class ESPnetASRModel(AbsESPnetModel):
         speech_lengths: torch.Tensor,
         text: torch.Tensor,
         text_lengths: torch.Tensor,
-        train_transition: bool=False,
         noisy_label_flag: bool=False,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
         """Frontend + Encoder + Decoder + Calc loss
@@ -139,9 +136,9 @@ class ESPnetASRModel(AbsESPnetModel):
 
         # 2a. Attention-decoder branch
         if self.ctc_weight == 1.0:
-            loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att, repl_ratio = None, None, None, None, None, None, None
+            loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att, repl_ratio, acc_lm_att  = None, None, None, None, None, None, None, None
         else:
-            loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att, repl_ratio = self._calc_att_loss(
+            loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att, repl_ratio, acc_lm_att = self._calc_att_loss(
                 encoder_out, encoder_out_lens, text, text_lengths, noisy_label_flag
             )            
             
@@ -156,32 +153,25 @@ class ESPnetASRModel(AbsESPnetModel):
         # 2c. RNN-T branch
         if self.rnnt_decoder is not None:
             _ = self._calc_rnnt_loss(encoder_out, encoder_out_lens, text, text_lengths)
-
         
-        if not train_transition:
-            if self.ctc_weight == 0.0:
-                loss = loss_att
-            elif self.ctc_weight == 1.0:
-                loss = loss_ctc
-            else:
-                loss = self.ctc_weight * loss_ctc + (1 - self.ctc_weight) * loss_att 
-
-            stats = dict(
-                loss=loss.detach(),
-                loss_att=loss_att.detach() if loss_att is not None else None,
-                loss_ctc=loss_ctc.detach() if loss_ctc is not None else None,
-                acc=acc_att,
-                cer=cer_att,
-                wer=wer_att,
-                cer_ctc=cer_ctc,
-                repl_ratio=repl_ratio
-            )
+        if self.ctc_weight == 0.0:
+            loss = loss_att
+        elif self.ctc_weight == 1.0:
+            loss = loss_ctc
         else:
-            loss = self.cleaner(out_att, ys_out_att)
+            loss = self.ctc_weight * loss_ctc + (1 - self.ctc_weight) * loss_att 
 
-            stats = dict(
-                loss=loss.detach()
-            )
+        stats = dict(
+            loss=loss.detach(),
+            loss_att=loss_att.detach() if loss_att is not None else None,
+            loss_ctc=loss_ctc.detach() if loss_ctc is not None else None,
+            acc=acc_att,
+            cer=cer_att,
+            wer=wer_att,
+            cer_ctc=cer_ctc,
+            repl_ratio=repl_ratio,
+            acc_lm_att=acc_lm_att,
+        )
 
         # force_gatherable: to-device and to-tensor if scalar for DataParallel
         loss, stats, weight = force_gatherable((loss, stats, batch_size), loss.device)
@@ -294,8 +284,10 @@ class ESPnetASRModel(AbsESPnetModel):
             ys_out_pad,
             ignore_label=self.ignore_id,
         )
-
+        
+        # 3. Text cleaner for noisy label
         repl_ratio = 0.0
+        acc_lm_att = 1.0
         out_att = None
         ys_out_att = None
         if noisy_label_flag:
@@ -335,6 +327,13 @@ class ESPnetASRModel(AbsESPnetModel):
                 # loss_att = loss_att + kl.masked_fill(ignore.unsqueeze(1), 0).sum() / denom 
                 # loss_att = loss_att / 2        
 
+        
+                acc_lm_att = th_accuracy(
+                    total_out_prob.view(-1, self.vocab_size),
+                    ys_out_pad,
+                    ignore_label=self.ignore_id,
+                )
+
         # Compute cer/wer using attention-decoder
         if self.training or self.error_calculator is None:
             cer_att, wer_att = None, None
@@ -342,7 +341,7 @@ class ESPnetASRModel(AbsESPnetModel):
             ys_hat = decoder_out.argmax(dim=-1)
             cer_att, wer_att = self.error_calculator(ys_hat.cpu(), ys_pad.cpu())
 
-        return loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att, repl_ratio
+        return loss_att, ys_out_att, out_att, acc_att, cer_att, wer_att, repl_ratio, acc_lm_att
 
     def _calc_ctc_loss(
         self,
