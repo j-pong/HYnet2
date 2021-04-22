@@ -68,9 +68,11 @@ specaug_conf:
 # batch_bins: 14000000
 # accum_grad: 1
 
+# We should run this stage with ngpu == 1
+# batch_bins: 100000000 -> 4gpu settings
 stage: 2
 max_epoch: 1
-batch_bins: 30000000
+batch_bins: 28000000 
 init_param: 
     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:encoder:encoder
     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:decoder:decoder

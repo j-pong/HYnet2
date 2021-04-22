@@ -22,6 +22,8 @@ import torch.nn
 import torch.optim
 from typeguard import check_argument_types
 
+from tqdm import tqdm
+
 from espnet2.iterators.abs_iter_factory import AbsIterFactory
 from espnet2.main_funcs.average_nbest_models import average_nbest_models
 from espnet2.main_funcs.calculate_all_attentions import calculate_all_attentions
@@ -301,14 +303,15 @@ class Trainer:
                         distributed_option=distributed_option,
                     )
             elif trainer_options.stage == 2:
-                with reporter.observe("validate_confidence") as sub_reporter:
-                    all_steps_are_invalid = cls.validate_confidence_one_epoch(
-                        model=dp_model,
-                        iterator=noisy_iterator,
-                        reporter=sub_reporter,
-                        options=trainer_options,
-                        distributed_option=distributed_option,
-                    )
+                if not distributed_option.distributed or distributed_option.dist_rank == 0:
+                    with reporter.observe("validate_confidence") as sub_reporter:
+                        all_steps_are_invalid = cls.validate_confidence_one_epoch(
+                            model=dp_model,
+                            iterator=noisy_iterator,
+                            reporter=sub_reporter,
+                            options=trainer_options,
+                            distributed_option=distributed_option,
+                        )
             elif trainer_options.stage == 3:
                 with reporter.observe("train_clean_and_noisy") as sub_reporter:
                     all_steps_are_invalid = cls.train_one_epoch(
@@ -788,12 +791,14 @@ class Trainer:
 
         model.eval()
 
-        min, max, mean = None, None, None
-
-        # [For distributed] Because iteration counts are not always equals between
-        # processes, send stop-flag to the other processes if iterator is finished
         iterator_stop = torch.tensor(0).to("cuda" if ngpu > 0 else "cpu")
-        for (_, batch) in iterator:
+        if ngpu > 1 or distributed:
+                raise AttributeError("This validate not support the multi-gpu settings")
+
+        # total_mean, total_max, total_min = None, None, None
+        total_hist = None
+        total_mean = None
+        for (_, batch) in tqdm(iterator):
             assert isinstance(batch, dict), type(batch)
             if distributed:
                 torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
@@ -804,29 +809,38 @@ class Trainer:
             if no_forward_run:
                 continue
 
-            retval = model(**batch)
+            retval = model(**batch, inspect=True)
             if isinstance(retval, dict):
                 stats = retval["stats"]
                 weight = retval["weight"]
             else:
                 _, stats, weight = retval
-            if ngpu > 1 or distributed:
-                # Apply weighted averaging for stats.
-                # if distributed, this method can also apply all_reduce()
-                stats, weight = recursive_average(stats, weight, distributed)
+
+            # update the histogram parameter
+            p = model.confid_hist
+            d_p = p.grad
+            p.add_(d_p, alpha=1)
+            p.grad.detach_()
+            p.grad.zero_()
             
-            # # inspect the min, max and mean of the confidence
-            # min = stats['min'] = 
-            # max = stats['max']
-            # mean = stats['mean']  
+            # mean = stats["confid_mean"]
+            # # max = stats["confid_max"]
+            # # min = stats["confid_min"]
+            # if total_mean is None:
+            #     total_mean = mean
+            # #     total_max = max
+            # #     total_min = min
+            # else:
+            #     total_mean += mean
+            # #     if total_max < max:
+            # #         total_max = max
+            # #     elif total_min > min:
+            # #         total_min = min
 
             reporter.register(stats, weight)
             reporter.next()
-
-        else:
-            if distributed:
-                iterator_stop.fill_(1)
-                torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
+        print(total_hist)
+        # print(total_mean)
 
     @classmethod
     @torch.no_grad()

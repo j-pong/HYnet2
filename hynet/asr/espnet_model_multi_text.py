@@ -98,9 +98,9 @@ class ESPnetASRModel(AbsESPnetModel):
             self.error_calculator = None
         
         # Task related
-        self.bins = 100
-        self.confid_hist = torch.nn.Parameter(torch.Tensor(self.bins))
         self.lm = lm
+        self.normalize_length = length_normalized_loss
+        self.criterion_boot = torch.nn.KLDivLoss(reduction="none")
 
     def forward(
         self,
@@ -108,6 +108,8 @@ class ESPnetASRModel(AbsESPnetModel):
         speech_lengths: torch.Tensor,
         text: torch.Tensor,
         text_lengths: torch.Tensor,
+        text_aux: torch.Tensor,
+        text_aux_lengths: torch.Tensor,
         noisy_label_flag: bool=False,
         inspect: bool=False, 
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
@@ -118,23 +120,30 @@ class ESPnetASRModel(AbsESPnetModel):
             speech_lengths: (Batch, )
             text: (Batch, Length)
             text_lengths: (Batch,)
+            text_aux: (Batch, Length)
+            text_aux_lengths: (Batch,)
         """
         assert text_lengths.dim() == 1, text_lengths.shape
+        assert text_aux_lengths.dim() == 1, text_aux_lengths.shape
         # Check that batch_size is unified
         assert (
             speech.shape[0]
             == speech_lengths.shape[0]
             == text.shape[0]
             == text_lengths.shape[0]
-        ), (speech.shape, speech_lengths.shape, text.shape, text_lengths.shape)
+            == text_aux.shape[0]
+            == text_aux_lengths.shape[0]
+        ), (speech.shape, speech_lengths.shape, text.shape, text_lengths.shape, text_aux.shape, text_aux_lengths.shape)
         batch_size = speech.shape[0]
 
         # for data-parallel
         text = text[:, : text_lengths.max()]
+        text_aux = text_aux[:, : text_aux_lengths.max()]
 
         # 1. Encoder
         encoder_out, encoder_out_lens = self.encode(speech, speech_lengths)
 
+        # FIXME(dh): Use auxiliary text(text_aux) as you want
         # 2a. Attention-decoder branch
         if self.ctc_weight == 1.0:
             loss_att, decoder_out_att, ys_out_pad_att, acc_att, cer_att, wer_att, repl_ratio, acc_lm_att  = None, None, None, None, None, None, None, None
@@ -144,34 +153,15 @@ class ESPnetASRModel(AbsESPnetModel):
             )
 
         if inspect:
-            with torch.no_grad():
-                decoder_out_att_prob = torch.softmax(decoder_out_att, dim=-1)
+            decoder_out_att_prob = torch.softmax(decoder_out_att, dim=-1)
 
-                # Select target label probability from pred_dist
-                bsz, tsz = ys_out_pad_att.size()
-                decoder_out_att_prob = decoder_out_att_prob.view(bsz * tsz, -1)
-                decoder_out_att_prob = decoder_out_att_prob[torch.arange(bsz * tsz), 
-                                                            ys_out_pad_att.view(bsz * tsz)]
-                decoder_out_att_prob = decoder_out_att_prob.view(bsz, tsz)
+            ignore = ys_out_pad_att == self.ignore_id  # (B,)
+            total = len(ys_out_pad_att) - ignore.sum().item()
+            decoder_out_att = decoder_out_att.masked_fill(ignore.unsqueeze(-1), 0)  # avoid -1 index
 
-                # Ignore the padded labels
-                ignore = ys_out_pad_att == self.ignore_id
-                confid_weight = ys_out_pad_att.size(0) * ys_out_pad_att.size(1) - ignore.float().sum().item()
-                decoder_out_att_prob = decoder_out_att_prob.masked_select(~ignore)  # avoid -1 index
-
-                # Caculate the statistics
-                confid_mean = decoder_out_att_prob.mean()
-                grad = torch.tensor([0] * self.bins).to(self.confid_hist.device)
-                for i in range(self.bins):
-                    upper_mask = decoder_out_att_prob > i / self.bins
-                    lower_mask = decoder_out_att_prob < i+1 / self.bins
-
-                    mask = upper_mask * lower_mask
-
-                    bin = mask.sum()
-
-                    grad[i] = bin
-                self.confid_hist.grad = grad.type(self.confid_hist.dtype) 
+            confid_mean = decoder_out_att.sum() / total
+            confid_max = decoder_out_att.max()
+            confid_min = decoder_out_att.min()
             
         # 2b. CTC branch
         if self.ctc_weight == 0.0:
@@ -206,11 +196,6 @@ class ESPnetASRModel(AbsESPnetModel):
 
         # force_gatherable: to-device and to-tensor if scalar for DataParallel
         loss, stats, weight = force_gatherable((loss, stats, batch_size), loss.device)
-        
-        # if inspect:
-        #     stats['hist'] = hist
-        #     stats['confid_mean'] = confid_mean
-        
         return loss, stats, weight
 
     def collect_feats(
@@ -219,6 +204,8 @@ class ESPnetASRModel(AbsESPnetModel):
         speech_lengths: torch.Tensor,
         text: torch.Tensor,
         text_lengths: torch.Tensor,
+        text_aux: torch.Tensor=None,
+        text_aux_lengths: torch.Tensor=None,
     ) -> Dict[str, torch.Tensor]:
         feats, feats_lengths = self._extract_feats(speech, speech_lengths)
         return {"feats": feats, "feats_lengths": feats_lengths}

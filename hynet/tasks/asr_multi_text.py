@@ -47,7 +47,6 @@ from espnet2.layers.utterance_mvn import UtteranceMVN
 from espnet2.tasks.abs_task import AbsTask
 from espnet2.train.class_choices import ClassChoices
 from espnet2.train.collate_fn import CommonCollateFn
-from espnet2.train.preprocessor import CommonPreprocessor
 from espnet2.utils.get_default_kwargs import get_default_kwargs
 from espnet2.utils.nested_dict_action import NestedDictAction
 from espnet2.utils.types import float_or_none
@@ -71,9 +70,10 @@ from espnet2.torch_utils.load_pretrained_model import load_pretrained_model
 
 from hynet.main_funcs.collect_stats import collect_stats
 from hynet.train.trainer import Trainer
-from hynet.asr.espnet_model import ESPnetASRModel
+from hynet.asr.espnet_model_multi_text import ESPnetASRModel
 from hynet.asr.decoder.rnn_decoder import RNNDecoder
 from hynet.torch_utils.initialize import initialize
+from hynet.train.preprocessor_multi_text import CommonPreprocessor
 
 from espnet2.tasks.abs_task import IteratorOptions
 
@@ -361,6 +361,7 @@ class ASRTask(AbsTask):
                 speech_volume_normalize=args.speech_volume_normalize
                 if hasattr(args, "rir_scp")
                 else None,
+                text_name=["text", "text_aux"],
             )
         else:
             retval = None
@@ -382,7 +383,7 @@ class ASRTask(AbsTask):
     def optional_data_names(
         cls, train: bool = True, inference: bool = False
     ) -> Tuple[str, ...]:
-        retval = ()
+        retval = ("text_aux",)
         assert check_return_type(retval)
         return retval
 
