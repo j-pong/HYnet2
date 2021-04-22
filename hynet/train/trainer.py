@@ -822,25 +822,9 @@ class Trainer:
             p.add_(d_p, alpha=1)
             p.grad.detach_()
             p.grad.zero_()
-            
-            # mean = stats["confid_mean"]
-            # # max = stats["confid_max"]
-            # # min = stats["confid_min"]
-            # if total_mean is None:
-            #     total_mean = mean
-            # #     total_max = max
-            # #     total_min = min
-            # else:
-            #     total_mean += mean
-            # #     if total_max < max:
-            # #         total_max = max
-            # #     elif total_min > min:
-            # #         total_min = min
 
             reporter.register(stats, weight)
             reporter.next()
-        print(total_hist)
-        # print(total_mean)
 
     @classmethod
     @torch.no_grad()
