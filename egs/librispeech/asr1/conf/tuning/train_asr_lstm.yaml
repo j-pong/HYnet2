@@ -80,6 +80,8 @@ max_epoch: 24
 batch_bins: 14000000
 init_param: 
     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage2/1epoch.pth:stat:stat
+    - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:encoder:meta_asr.encoder
+    - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:decoder:meta_asr.decoder
 unused_parameters: true
 freeze_param:
     - asr

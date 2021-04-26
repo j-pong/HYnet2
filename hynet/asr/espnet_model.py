@@ -109,7 +109,7 @@ class ESPnetASRModel(AbsESPnetModel):
         encoder: AbsEncoder,
         decoder: AbsDecoder,
         ctc: CTC,
-        asr: None,
+        meta_asr,
         rnnt_decoder: None,
         ctc_weight: float = 0.5,
         ignore_id: int = -1,
@@ -159,7 +159,7 @@ class ESPnetASRModel(AbsESPnetModel):
             self.error_calculator = None
         
         # Task related
-        self.asr = asr
+        self.meta_asr = meta_asr
         self.lm = lm
         self.stat = ESPnetStatistic(
             ignore_id=ignore_id
@@ -212,18 +212,20 @@ class ESPnetASRModel(AbsESPnetModel):
             
         # 2a. Attention-decoder branch
         if self.ctc_weight == 1.0:
-            loss_att, decoder_out_att, ys_out_pad_att, acc_att, cer_att, wer_att  = None, None, None, None, None, None
+            loss_att, decoder_out_att, ys_out_pad_att, acc_att, cer_att, wer_att, pred_err_att = None, None, None, None, None, None, None
         else:
             if noisy_label_flag:
-                encoder_meta_out, encoder_meta_out_lens = self.asr.encode(speech, speech_lengths)
-                
-                ys_in_pad, _ = self._add_sos_eos_noisy(text)
-                ys_in_lens = text_lengths + 1
+                decoder_out_prob = self._meta_forward(
+                    speech,
+                    speech_lengths,
+                    text,
+                    text_lengths
+                )
+            else:
+                decoder_out_prob = None
 
-                decoder_meta_out, _ = self.asr.decoder(encoder_meta_out, encoder_meta_out_lens, ys_in_pad, ys_in_lens)
-
-            loss_att, decoder_out_att, ys_out_pad_att, acc_att, cer_att, wer_att = self._calc_att_loss(
-                encoder_out, encoder_out_lens, text, text_lengths, noisy_label_flag
+            loss_att, decoder_out_att, ys_out_pad_att, acc_att, cer_att, wer_att, pred_err_att = self._calc_att_loss(
+                encoder_out, encoder_out_lens, text, text_lengths, noisy_label_flag, decoder_out_prob
             )
         # 2a.1. Caculate statistics
         if inspect:
@@ -241,7 +243,7 @@ class ESPnetASRModel(AbsESPnetModel):
         if self.rnnt_decoder is not None:
             _ = self._calc_rnnt_loss(encoder_out, encoder_out_lens, text, text_lengths)
         
-        if self.ctc_weight == 0.0:
+        if self.ctc_weight == 0.0 or noisy_label_flag:
             loss = loss_att
         elif self.ctc_weight == 1.0:
             loss = loss_ctc
@@ -256,6 +258,7 @@ class ESPnetASRModel(AbsESPnetModel):
             cer=cer_att,
             wer=wer_att,
             cer_ctc=cer_ctc,
+            pred_err_att=pred_err_att,
         )
 
         # force_gatherable: to-device and to-tensor if scalar for DataParallel
@@ -339,73 +342,52 @@ class ESPnetASRModel(AbsESPnetModel):
         encoder_out_lens: torch.Tensor,
         ys_pad: torch.Tensor,
         ys_pad_lens: torch.Tensor,
-        decoder_meta_out: None,
+        noisy_label_flag=False,
+        decoder_out_prob=None,
+        replacment_flag=True,
     ):
-        replacment_flag = True
+        ys_in_pad, ys_out_pad = add_sos_eos(ys_pad, self.sos, self.eos, self.ignore_id)
 
-        if noisy_label_flag:
-            ys_pad_in, ys_pad_out = self._add_sos_eos_noisy(ys_pad)
-            ys_in_lens = ys_pad_lens + 1
+        if noisy_label_flag and replacment_flag:
+            assert decoder_out_prob is not None
+            from espnet.nets.pytorch_backend.nets_utils import pad_list    
+            bsz, tsz, _ = decoder_out_prob.size()
+            
+            # Select target label probability from pred_dist
+            decoder_out_prob = decoder_out_prob.view(bsz * tsz, -1)
+            decoder_out_prob = decoder_out_prob[
+                torch.arange(bsz * tsz),
+                ys_out_pad.view(bsz * tsz)
+            ]
+            decoder_out_prob = decoder_out_prob.view(bsz, tsz)
 
-            if replacment_flag:
-                assert decoder_meta_out is not None
-                # Collect the posterior distribution
-                decoder_out_prob = torch.softmax(decoder_meta_out, dim=-1)
-                if self.lm is not None:
-                    lam = 0.6
+            # Eliminate the <eos> token
+            repl_mask = [prob[:l] < self.th for prob, l in zip(decoder_out_prob, ys_pad_lens)]
 
-                    lm_out, _ = self.lm(ys_in_pad, None)
-                    lm_out_prob = torch.softmax(lm_out, dim=-1)
-                    decoder_out_prob = lam * lm_out_prob + decoder_out_prob
-                    
-                    acc_lm_att = th_accuracy(
-                        total_out_prob.view(-1, self.vocab_size),
-                        ys_out_pad,
-                        ignore_label=self.ignore_id,
-                    )
-                else:
-                    acc_lm_att = None
-                    
-                # Select target label probability from pred_dist
-                bsz, tsz = ys_out_pad.size()
-
-                decoder_out_prob = decoder_out_prob.view(bsz * tsz, -1)
-                decoder_out_prob = decoder_out_prob[
-                    torch.arange(bsz * tsz),
-                    ys_out_pad.view(bsz * tsz)
-                ]
-                decoder_out_prob = decoder_out_prob.view(bsz, tsz)
-
-                # Replace the low confidence labels
-                repl_mask = [prob[:l] < self.th for prob, l in zip(decoder_out_prob, ys_pad_lens)] # sos eos check
-
-                _sos = ys_pad.new([self.sos])
-                _ignore = ys_pad.new([self.ignore_id])
-                ys_in = [y[y != self.ignore_id] for y in ys_pad.clone().detach()]
-                ys_out = [y[y != self.ignore_id] for y in ys_pad.clone().detach()]
-                for rm, y in zip(repl_mask, ys_in):
-                    y[rm] = 1 # <unk> token
-                for rm, y in zip(repl_mask, ys_out):
-                    y[rm] = torch.multinomial(decoder_out_prob)
-                ys_in = [torch.cat([_sos, y], dim=0) for y in ys_in]
-                ys_out = [torch.cat([y, _ignore], dim=0) for y in ys_out]
-                ys_in_pad = pad_list(ys_in, self.eos)
-                ys_out_pad = pad_list(ys_out, self.ignore_id)
-
-                # ignore = ys_out_pad.view(-1) == self.ignore_id
-                # repl_ratio = (decoder_out_prob.argmax(dim=-1) == total_out_prob.argmax(dim=-1)).float().view(-1)
-                # repl_ratio = repl_ratio.masked_fill(ignore, 0)
-                # total = len(ys_out_pad.view(-1)) - ignore.sum().item()
-                # repl_ratio = repl_ratio.sum() / total
-
-        else:
-            ys_in_pad, ys_out_pad = add_sos_eos(ys_pad, self.sos, self.eos, self.ignore_id)
-            ys_in_lens = ys_pad_lens + 1
+            # Replace the low confidence input labels
+            _sos = ys_pad.new([self.sos])
+            ys_in = [y[y != self.ignore_id] for y in ys_pad.clone().detach()]
+            for rm, y in zip(repl_mask, ys_in):
+                y[rm] = 1
+            ys_in = [torch.cat([_sos, y], dim=0) for y in ys_in]
+            ys_in_pad = pad_list(ys_in, self.eos)
+        ys_in_lens = ys_pad_lens + 1
 
         # 1. Forward decoder
         decoder_out, _ = self.decoder(
             encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens
         )
+        if noisy_label_flag and replacment_flag:
+            decoder_out_prob = torch.softmax(decoder_out, dim=-1)
+
+            # Replace the low confidence target labels
+            _ignore = ys_pad.new([self.ignore_id])
+            ys_out = [y[y != self.ignore_id] for y in ys_pad.clone().detach()]
+            for i, (rm, y) in enumerate(zip(repl_mask, ys_out)):
+                samples = torch.multinomial(decoder_out_prob[i][:len(y)], 1).squeeze(-1)
+                y[rm] = samples[rm]
+            ys_out = [torch.cat([y, _ignore], dim=0) for y in ys_out]
+            ys_out_pad = pad_list(ys_out, self.ignore_id)
 
         # 2. Compute attention loss
         loss_att = self.criterion_att(decoder_out, ys_out_pad)
@@ -414,6 +396,15 @@ class ESPnetASRModel(AbsESPnetModel):
             ys_out_pad,
             ignore_label=self.ignore_id,
         )
+        if noisy_label_flag and replacment_flag:
+            num_repl = 0.0
+            num_total = 0.0
+            for m in repl_mask:
+                num_repl += m.sum()
+                num_total += len(m)
+            pred_err_att = float(num_repl / num_total)
+        else:
+            pred_err_att = 0.0
 
         # Compute cer/wer using attention-decoder
         if self.training or self.error_calculator is None:
@@ -422,7 +413,7 @@ class ESPnetASRModel(AbsESPnetModel):
             ys_hat = decoder_out.argmax(dim=-1)
             cer_att, wer_att = self.error_calculator(ys_hat.cpu(), ys_pad.cpu())
 
-        return loss_att, decoder_out, ys_out_pad, acc_att, cer_att, wer_att
+        return loss_att, decoder_out, ys_out_pad, acc_att, cer_att, wer_att, pred_err_att
 
     def _calc_ctc_loss(
         self,
@@ -450,30 +441,28 @@ class ESPnetASRModel(AbsESPnetModel):
     ):
         raise NotImplementedError
 
-    def _label_random_masker(
+    @torch.no_grad()
+    def _meta_forward(
         self,
-        label,
-        prior=None,
+        speech,
+        speech_lengths,
+        text,
+        text_lengths,
+        lam=0.6,
     ):
+        assert self.meta_asr is not None
+        ys_in_pad, _ = add_sos_eos(text, self.sos, self.eos, self.ignore_id)
+        ys_in_lens = text_lengths + 1
+
+        encoder_meta_out, encoder_meta_out_lens = self.meta_asr.encode(speech, speech_lengths)
+        decoder_meta_out, _ = self.meta_asr.decoder(encoder_meta_out, encoder_meta_out_lens, ys_in_pad, ys_in_lens)
+
+        decoder_out_prob = torch.softmax(decoder_meta_out, dim=-1)
+        if self.lm is not None:
+            lm_out, _ = self.lm(ys_in_pad, None)
+            lm_out_prob = torch.softmax(lm_out, dim=-1)
+
+            decoder_out_prob = lam * lm_out_prob + decoder_out_prob
         
-        return None
-
-    def _add_sos_eos_noisy(
-        self,
-        ys_pad,  
-    ):
-        from espnet.nets.pytorch_backend.nets_utils import pad_list
-
-        _sos = ys_pad.new([self.sos])
-        _ignore = ys_pad.new([self.ignore_id])
-
-        ys = [y[y != self.ignore_id] for y in ys_pad]  # parse padded ys
-
-        ys_in = [torch.cat([_sos, y], dim=0) for y in ys]
-        ys_out = [torch.cat([y, _ignore], dim=0) for y in ys]
-
-        ys_in_pad = pad_list(ys_in, self.eos)
-        ys_out_pad = pad_list(ys_out, self.ignore_id)
-
-        return ys_in_pad, ys_out_pad
+        return decoder_out_prob
 
