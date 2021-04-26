@@ -822,7 +822,7 @@ class ASRTask(AbsTask):
         rnnt_decoder = None
 
         # 8. Build model
-        model = ESPnetASRModel(
+        meta_model = ESPnetASRModel(
             vocab_size=vocab_size,
             frontend=frontend,
             specaug=specaug,
@@ -836,6 +836,21 @@ class ASRTask(AbsTask):
             token_list=token_list,
             **args.model_conf,
         )
+        model = ESPnetASRModel(
+            vocab_size=vocab_size,
+            frontend=frontend,
+            specaug=specaug,
+            normalize=normalize,
+            preencoder=preencoder,
+            lm=lm,
+            encoder=encoder,
+            decoder=decoder,
+            ctc=ctc,
+            asr=meta_model,
+            rnnt_decoder=rnnt_decoder,
+            token_list=token_list,
+            **args.model_conf,
+        )
 
         # FIXME(kamo): Should be done in model?
         # 9. Initialize
@@ -844,49 +859,3 @@ class ASRTask(AbsTask):
 
         assert check_return_type(model)
         return model
-
-# class LossCorrection(torch.nn.Module):
-#     def __init__(
-#         self,
-#         vocab_size: int,
-#     ):
-#         super().__init__()
-#         self.vocab_size = vocab_size
-
-#         self.corrupt_mat = torch.nn.Parameter(torch.Tensor(vocab_size, vocab_size))
-#         self.register_buffer('corrupt_label_weight', torch.Tensor(vocab_size))
-
-#     def forward(
-#         self,
-#         out_att: torch.Tensor,
-#         ys_out_att: torch.Tensor,
-#     ):
-#         batch_size = out_att.shape[0]
-#         # clean label X noisy label
-#         grad_mat = torch.zeros_like(self.corrupt_mat)
-
-#         # caculate noisy distribution
-#         probs = torch.softmax(out_att, dim=-1)
-
-#         for i in range(self.vocab_size):
-#             # prepare the mask for selecting the clean label
-#             mask = ys_out_att == i
-#             mask = mask.view([batch_size, -1, 1])#.expand(probs.shape)
-
-#             # select the distribution and give the distribution to grad_mat
-#             probs_select = torch.masked_select(probs, mask)
-#             probs_select = probs_select.view([-1, self.vocab_size])
-
-#             # save the results
-#             if probs_select.shape[0] != 0:
-#                 grad_mat[i] = torch.sum(probs_select, dim=0).detach()
-#             self.corrupt_label_weight[i] += probs_select.shape[0]
-        
-#         # instance backward
-#         self.corrupt_mat.grad = -grad_mat
-
-#         # calculate perplexity loss
-#         mean_max = torch.max(self.corrupt_mat, dim=-1, keepdims=True)[0]
-#         loss = (self.corrupt_mat - mean_max).square().mean()
-
-#         return loss

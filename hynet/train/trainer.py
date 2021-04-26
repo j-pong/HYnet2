@@ -476,6 +476,7 @@ class Trainer:
         summary_writer: Optional[SummaryWriter],
         options: TrainerOptions,
         distributed_option: DistributedOption,
+        iterators_sampling_ratio=0.80,
     ) -> bool:
         assert check_argument_types()
 
@@ -516,7 +517,7 @@ class Trainer:
             start = time.perf_counter()
             if break_flag == 0:
                 # FIXME: hard coding for sampling ration of each dataset
-                select_prime_iter = random.random() > 0.12
+                select_prime_iter = random.random() > iterators_sampling_ratio
             else:
                 if break_flag == 1:
                     select_prime_iter = True
@@ -809,7 +810,7 @@ class Trainer:
             if no_forward_run:
                 continue
 
-            retval = model(**batch, inspect=True)
+            retval = model(**batch, inspect=True, noisy_label_flag=True)
             if isinstance(retval, dict):
                 stats = retval["stats"]
                 weight = retval["weight"]
@@ -817,11 +818,7 @@ class Trainer:
                 _, stats, weight = retval
 
             # update the histogram parameter
-            p = model.confid_hist
-            d_p = p.grad
-            p.add_(d_p, alpha=1)
-            p.grad.detach_()
-            p.grad.zero_()
+            model.stat.backward()
 
             reporter.register(stats, weight)
             reporter.next()

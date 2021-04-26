@@ -42,9 +42,6 @@ optim_conf:
     rho: 0.95
     eps: 1.0e-08
     weight_decay: 0
-# scheduler: warmuplr
-# scheduler_conf:
-#     warmup_steps: 25000
 
 specaug: specaug
 specaug_conf:
@@ -63,6 +60,7 @@ specaug_conf:
     num_time_mask: 2
 
 # Custom Settings
+# # training the clean labels
 # stage: 1
 # max_epoch: 80
 # batch_bins: 14000000
@@ -70,12 +68,21 @@ specaug_conf:
 
 # We should run this stage with ngpu == 1
 # batch_bins: 100000000 -> 4gpu settings
-stage: 2
-max_epoch: 1
-batch_bins: 28000000 
+# stage: 2
+# max_epoch: 1
+# batch_bins: 26000000 
+# init_param: 
+#     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:encoder:encoder
+#     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:decoder:decoder
+
+stage: 3
+max_epoch: 24
+batch_bins: 14000000
 init_param: 
-    - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:encoder:encoder
-    - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:decoder:decoder
+    - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage2/1epoch.pth:stat:stat
+unused_parameters: true
+freeze_param:
+    - asr
 
 # lm: transformer
 # lm_conf:
