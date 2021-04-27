@@ -253,11 +253,11 @@ class ESPnetASRModel(AbsESPnetModel):
         stats = dict(
             loss=loss.detach(),
             loss_att=loss_att.detach() if loss_att is not None else None,
-            loss_ctc=loss_ctc.detach() if loss_ctc is not None else None,
+            # loss_ctc=loss_ctc.detach() if loss_ctc is not None else None,
             acc=acc_att,
             cer=cer_att,
             wer=wer_att,
-            cer_ctc=cer_ctc,
+            # cer_ctc=cer_ctc,
             pred_err_att=pred_err_att,
         )
 
@@ -368,7 +368,7 @@ class ESPnetASRModel(AbsESPnetModel):
             _sos = ys_pad.new([self.sos])
             ys_in = [y[y != self.ignore_id] for y in ys_pad.clone().detach()]
             for rm, y in zip(repl_mask, ys_in):
-                y[rm] = 1
+                y[rm] = 1 # <unk> token
             ys_in = [torch.cat([_sos, y], dim=0) for y in ys_in]
             ys_in_pad = pad_list(ys_in, self.eos)
         ys_in_lens = ys_pad_lens + 1
@@ -402,7 +402,7 @@ class ESPnetASRModel(AbsESPnetModel):
             for m in repl_mask:
                 num_repl += m.sum()
                 num_total += len(m)
-            pred_err_att = float(num_repl / num_total)
+            pred_err_att = float(num_repl) / float(num_total)
         else:
             pred_err_att = 0.0
 
