@@ -171,12 +171,12 @@ class ESPnetASRModel(AbsESPnetModel):
         self.stat = ESPnetStatistic(
             ignore_id=ignore_id
         )
+        self.th = 0.18
         # Pre-trained ASR encoder-decoder archictecture
         self.meta_encoder = meta_encoder
         self.meta_decoder = meta_decoder
         # Language model
         self.lm = lm
-        
 
     def forward(
         self,
@@ -185,7 +185,7 @@ class ESPnetASRModel(AbsESPnetModel):
         text: torch.Tensor,
         text_lengths: torch.Tensor,
         noisy_label_flag: bool=False,
-        replace_label_flag: bool=False,
+        replace_label_flag: bool=True,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
         """Frontend + Encoder + Decoder + Calc loss
 
@@ -195,19 +195,17 @@ class ESPnetASRModel(AbsESPnetModel):
             text: (Batch, Length)
             text_lengths: (Batch,)
         """
-        if self.stat is not None :
-            hist = self.stat.confid_hist
-            if hist.sum() != 0:
-                hist.requires_grad = False
-                total_sum = hist.sum()
-                # simaple mean testing for alpha = 0.27
-                z_alpha = 18
-                self.th = 1 / self.stat.bins * z_alpha
-                # logging.info(hist[:z_alpha].sum()/total_sum, th)
-                # exit()
-            else:
-                # logging.warning("Prior histogram has {} value!".format(hist.sum()))
-                self.th = None
+        # if self.stat is not None :
+        #     hist = self.stat.confid_hist
+        #     if hist.sum() != 0:
+        #         hist.requires_grad = False
+        #         total_sum = hist.sum()
+        #         # simaple mean testing for alpha = 0.27
+        #         z_alpha = 18
+        #         self.th = 1 / self.stat.bins * z_alpha
+        #     else:
+        #         # logging.warning("Prior histogram has {} value!".format(hist.sum()))
+        #         self.th = None
 
         assert text_lengths.dim() == 1, text_lengths.shape
         # Check that batch_size is unified
@@ -356,8 +354,8 @@ class ESPnetASRModel(AbsESPnetModel):
         encoder_out_lens: torch.Tensor,
         ys_pad: torch.Tensor,
         ys_pad_lens: torch.Tensor,
+        replace_label_flag: bool=False,
         decoder_out_prob=None,
-        replace_label_flag=False,
     ):
         ys_in_pad, ys_out_pad = add_sos_eos(ys_pad, self.sos, self.eos, self.ignore_id)
         if replace_label_flag:
