@@ -80,23 +80,14 @@ class ESPnetStatistic(torch.nn.Module):
         confid = calc_confidence(decoder_out_prob, ys_out_pad)
         confid = [conf[:l] for conf, l in zip(confid, ys_pad_lens)]
         confid = torch.cat(confid)
-        print(confid.size())
-        exit()
-
-        # # Ignore the padded labels
-        # ignore = ys_out_pad_att == self.ignore_id
-        # confid_weight = ys_out_pad_att.size(0) * ys_out_pad_att.size(1) - ignore.float().sum().item()
-        # decoder_out_att_prob = decoder_out_att_prob.masked_select(~ignore)  # avoid -1 index
 
         # Caculate the statistics
         # confid_mean = decoder_out_att_prob.mean()
         grad = torch.tensor([0] * self.bins).to(self.confid_hist.device)
         for i in range(self.bins):
-            upper_mask = decoder_out_att_prob > i / self.bins
-            lower_mask = decoder_out_att_prob < i+1 / self.bins
-            mask = upper_mask * lower_mask
-            grad[i] = mask.sum()
-
+            upper_mask = confid > i / self.bins
+            lower_mask = confid < i+1 / self.bins
+            grad[i] = (upper_mask * lower_mask).sum()
         self.confid_hist.grad = grad.type(self.confid_hist.dtype)
     
     def backward(
@@ -194,6 +185,7 @@ class ESPnetASRModel(AbsESPnetModel):
         text: torch.Tensor,
         text_lengths: torch.Tensor,
         noisy_label_flag: bool=False,
+        replace_label_flag: bool=False,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
         """Frontend + Encoder + Decoder + Calc loss
 
@@ -237,7 +229,7 @@ class ESPnetASRModel(AbsESPnetModel):
         if self.ctc_weight == 1.0:
             loss_att, acc_att, cer_att, wer_att, pred_err_att = None, None, None, None, None
         else:
-            if noisy_label_flag:
+            if replace_label_flag:
                 decoder_meta_out_prob = self._meta_forward(
                     speech,
                     speech_lengths,
@@ -249,7 +241,7 @@ class ESPnetASRModel(AbsESPnetModel):
 
             loss_att, acc_att, cer_att, wer_att, pred_err_att = self._calc_att_loss(
                 encoder_out, encoder_out_lens, text, text_lengths, 
-                noisy_label_flag, 
+                replace_label_flag, 
                 decoder_meta_out_prob
             )
             
@@ -365,12 +357,10 @@ class ESPnetASRModel(AbsESPnetModel):
         ys_pad: torch.Tensor,
         ys_pad_lens: torch.Tensor,
         decoder_out_prob=None,
-        noisy_label_flag=False,
-        replacment_flag=False,
+        replace_label_flag=False,
     ):
         ys_in_pad, ys_out_pad = add_sos_eos(ys_pad, self.sos, self.eos, self.ignore_id)
-        if noisy_label_flag and replacment_flag:
-            assert decoder_out_prob is not None
+        if replace_label_flag:
             from espnet.nets.pytorch_backend.nets_utils import pad_list    
             confid = calc_confidence(decoder_out_prob, ys_out_pad)
 
@@ -391,7 +381,7 @@ class ESPnetASRModel(AbsESPnetModel):
             encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens
         )
         # Replace the low confidence target labels
-        if noisy_label_flag and replacment_flag:
+        if replace_label_flag:
             decoder_out_prob = torch.softmax(decoder_out, dim=-1)
             
             _ignore = ys_pad.new([self.ignore_id])
@@ -410,7 +400,7 @@ class ESPnetASRModel(AbsESPnetModel):
             ys_out_pad,
             ignore_label=self.ignore_id,
         )
-        if noisy_label_flag and replacment_flag:
+        if replace_label_flag:
             num_repl = 0.0
             num_total = 0.0
             for m in repl_mask:
@@ -458,32 +448,22 @@ class ESPnetASRModel(AbsESPnetModel):
     ###########################################################
     ############     Meta-loop related methods     ############
     ###########################################################
-
-    @torch.no_grad()
-    def _meta_forward(
+    def _meta_collect_stats(
         self,
         speech: torch.Tensor,
         speech_lengths: torch.Tensor,
         text: torch.Tensor,
         text_lengths: torch.Tensor,
-        lam=0.6,
     ):
-        assert self.meta_encoder is not None
-        assert self.meta_decoder is not None
-        ys_in_pad, _ = add_sos_eos(text, self.sos, self.eos, self.ignore_id)
+        ys_in_pad, ys_out_pad = add_sos_eos(text, self.sos, self.eos, self.ignore_id)
         ys_in_lens = text_lengths + 1
 
-        encoder_meta_out, encoder_meta_out_lens = self._meta_encode(speech, speech_lengths)
-        decoder_meta_out, _ = self.meta_decoder(encoder_meta_out, encoder_meta_out_lens, ys_in_pad, ys_in_lens)
+        encoder_out, encoder_out_lens = self.encode(speech, speech_lengths)
+        decoder_out, _ = self.decoder(encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens)
 
-        decoder_out_prob = torch.softmax(decoder_meta_out, dim=-1)
-        if self.lm is not None:
-            lm_out, _ = self.lm(ys_in_pad, None)
-            lm_out_prob = torch.softmax(lm_out, dim=-1)
-
-            decoder_out_prob = lam * lm_out_prob + decoder_out_prob
+        # Prior statistic caculator
+        self.stat(decoder_out, ys_out_pad, ys_in_lens - 1) # eliminate <eos> label by reducing the ys_pad_lens
         
-        return decoder_out_prob
 
     def _meta_encode(
         self, 
@@ -528,18 +508,28 @@ class ESPnetASRModel(AbsESPnetModel):
 
         return encoder_out, encoder_out_lens
 
-    def _meta_collect_stats(
+    @torch.no_grad()
+    def _meta_forward(
         self,
         speech: torch.Tensor,
         speech_lengths: torch.Tensor,
         text: torch.Tensor,
         text_lengths: torch.Tensor,
+        lam=0.6,
     ):
-        ys_in_pad, ys_out_pad = add_sos_eos(text, self.sos, self.eos, self.ignore_id)
+        assert self.meta_encoder is not None
+        assert self.meta_decoder is not None
+        ys_in_pad, _ = add_sos_eos(text, self.sos, self.eos, self.ignore_id)
         ys_in_lens = text_lengths + 1
 
-        encoder_out, encoder_out_lens = self.encode(speech, speech_lengths)
-        decoder_out, _ = self.decoder(encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens)
+        encoder_meta_out, encoder_meta_out_lens = self._meta_encode(speech, speech_lengths)
+        decoder_meta_out, _ = self.meta_decoder(encoder_meta_out, encoder_meta_out_lens, ys_in_pad, ys_in_lens)
 
-        # Prior statistic caculator
-        self.stat(decoder_out, ys_out_pad, ys_in_lens - 1) # eliminate <eos> label by reducing the ys_pad_lens
+        decoder_out_prob = torch.softmax(decoder_meta_out, dim=-1)
+        if self.lm is not None:
+            lm_out, _ = self.lm(ys_in_pad, None)
+            lm_out_prob = torch.softmax(lm_out, dim=-1)
+
+            decoder_out_prob = lam * lm_out_prob + decoder_out_prob
+        
+        return decoder_out_prob

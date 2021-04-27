@@ -809,19 +809,11 @@ class Trainer:
             batch = to_device(batch, "cuda" if ngpu > 0 else "cpu")
             if no_forward_run:
                 continue
-
+            
             model._meta_collect_stats(**batch)
-            # if isinstance(retval, dict):
-            #     stats = retval["stats"]
-            #     weight = retval["weight"]
-            # else:
-            #     _, stats, weight = retval
-
             # update the histogram parameter
             model.stat.backward()
-
-            # reporter.register(stats, weight)
-            # reporter.next()
+            
 
     @classmethod
     @torch.no_grad()
