@@ -35,6 +35,26 @@ else:
     def autocast(enabled=True):
         yield
 
+def confidence(
+        probs: torch.Tensor,
+        labels: torch.Tensor,
+    ):
+        """Confidence for filtering
+
+        Args:
+            probs: (Batch, Length, Vocab_size)
+            labels: (Batch, Length)
+        """
+        bsz, tsz, _ = probs.size()
+            
+        probs = probs.view(bsz * tsz, -1)
+        confid = probs[
+            torch.arange(bsz * tsz),
+            labels.view(bsz * tsz)
+        ]
+        confid  = confid.view(bsz, tsz)
+    return confid
+
 class ESPnetStatistic(torch.nn.Module):
     def __init__(
         self,
@@ -48,41 +68,36 @@ class ESPnetStatistic(torch.nn.Module):
         self.confid_hist = torch.nn.Parameter(torch.Tensor(self.bins))
         self.register_buffer('confid_mean', torch.Tensor(1))
 
+    @torch.no_grad()
     def forward(
         self,
         decoder_out_att,
-        ys_out_pad_att,
+        text_lenghts,
+        ys_out_pad_att
     ):
-        with torch.no_grad():
-            decoder_out_att_prob = torch.softmax(decoder_out_att, dim=-1)
+        decoder_out_att_prob = torch.softmax(decoder_out_att, dim=-1)
+        decoder_out_att_prob = confid(decoder_out_att_prob, ys_out_pad_att)
 
-            # Select target label probability from pred_dist
-            bsz, tsz = ys_out_pad_att.size()
-            decoder_out_att_prob = decoder_out_att_prob.view(bsz * tsz, -1)
-            decoder_out_att_prob = decoder_out_att_prob[torch.arange(bsz * tsz), 
-                                                        ys_out_pad_att.view(bsz * tsz)]
-            decoder_out_att_prob = decoder_out_att_prob.view(bsz, tsz)
+        # Ignore the padded labels
+        ignore = ys_out_pad_att == self.ignore_id
+        confid_weight = ys_out_pad_att.size(0) * ys_out_pad_att.size(1) - ignore.float().sum().item()
+        decoder_out_att_prob = decoder_out_att_prob.masked_select(~ignore)  # avoid -1 index
 
-            # Ignore the padded labels
-            ignore = ys_out_pad_att == self.ignore_id
-            confid_weight = ys_out_pad_att.size(0) * ys_out_pad_att.size(1) - ignore.float().sum().item()
-            decoder_out_att_prob = decoder_out_att_prob.masked_select(~ignore)  # avoid -1 index
+        # Caculate the statistics
+        confid_mean = decoder_out_att_prob.mean()
+        grad = torch.tensor([0] * self.bins).to(self.confid_hist.device)
 
-            # Caculate the statistics
-            confid_mean = decoder_out_att_prob.mean()
-            grad = torch.tensor([0] * self.bins).to(self.confid_hist.device)
+        for i in range(self.bins):
+            upper_mask = decoder_out_att_prob > i / self.bins
+            lower_mask = decoder_out_att_prob < i+1 / self.bins
 
-            for i in range(self.bins):
-                upper_mask = decoder_out_att_prob > i / self.bins
-                lower_mask = decoder_out_att_prob < i+1 / self.bins
+            mask = upper_mask * lower_mask
 
-                mask = upper_mask * lower_mask
+            bin = mask.sum()
 
-                bin = mask.sum()
+            grad[i] = bin
 
-                grad[i] = bin
-
-            self.confid_hist.grad = grad.type(self.confid_hist.dtype)
+        self.confid_hist.grad = grad.type(self.confid_hist.dtype)
     
     def backward(
         self,
@@ -105,12 +120,14 @@ class ESPnetASRModel(AbsESPnetModel):
         specaug: Optional[AbsSpecAug],
         normalize: Optional[AbsNormalize],
         preencoder: Optional[AbsPreEncoder],
-        lm: Optional[AbsLM],
         encoder: AbsEncoder,
         decoder: AbsDecoder,
         ctc: CTC,
-        meta_asr,
         rnnt_decoder: None,
+        lm: Optional[AbsLM],
+        meta_encoder: Optional[AbsEncoder],
+        meta_decoder: Optional[AbsDecoder],
+        stat: bool = False, 
         ctc_weight: float = 0.5,
         ignore_id: int = -1,
         lsm_weight: float = 0.0,
@@ -159,11 +176,15 @@ class ESPnetASRModel(AbsESPnetModel):
             self.error_calculator = None
         
         # Task related
-        self.meta_asr = meta_asr
+        self.meta_encoder = meta_encoder
+        self.meta_decoder = meta_decoder
         self.lm = lm
-        self.stat = ESPnetStatistic(
-            ignore_id=ignore_id
-        )
+        if stat:
+            self.stat = ESPnetStatistic(
+                ignore_id=ignore_id
+            )
+        else:
+            self.stat = None
 
     def forward(
         self,
@@ -182,17 +203,18 @@ class ESPnetASRModel(AbsESPnetModel):
             text: (Batch, Length)
             text_lengths: (Batch,)
         """
-        hist = self.stat.confid_hist
-        if hist.sum() != 0:
-            hist.requires_grad = False
-            total_sum = hist.sum()
-            # simaple mean testing for alpha = 0.27
-            z_alpha = 18
-            self.th = 1 / self.stat.bins * z_alpha
-            # logging.info(hist[:z_alpha].sum()/total_sum, th)
-        else:
-            # logging.warning("Prior histogram has {} value!".format(hist.sum()))
-            self.th = None
+        if (self.stat is not None) and (not inspect) :
+            hist = self.stat.confid_hist
+            if hist.sum() != 0:
+                hist.requires_grad = False
+                total_sum = hist.sum()
+                # simaple mean testing for alpha = 0.27
+                z_alpha = 18
+                self.th = 1 / self.stat.bins * z_alpha
+                # logging.info(hist[:z_alpha].sum()/total_sum, th)
+            else:
+                # logging.warning("Prior histogram has {} value!".format(hist.sum()))
+                self.th = None
 
         assert text_lengths.dim() == 1, text_lengths.shape
         # Check that batch_size is unified
@@ -212,24 +234,24 @@ class ESPnetASRModel(AbsESPnetModel):
             
         # 2a. Attention-decoder branch
         if self.ctc_weight == 1.0:
-            loss_att, decoder_out_att, ys_out_pad_att, acc_att, cer_att, wer_att, pred_err_att = None, None, None, None, None, None, None
+            loss_att, acc_att, cer_att, wer_att, pred_err_att = None, None, None, None, None
         else:
             if noisy_label_flag:
-                decoder_out_prob = self._meta_forward(
+                decoder_meta_out_prob = self._meta_forward(
                     speech,
                     speech_lengths,
                     text,
                     text_lengths
                 )
             else:
-                decoder_out_prob = None
+                decoder_meta_out_prob = None
 
-            loss_att, decoder_out_att, ys_out_pad_att, acc_att, cer_att, wer_att, pred_err_att = self._calc_att_loss(
-                encoder_out, encoder_out_lens, text, text_lengths, noisy_label_flag, decoder_out_prob
+            loss_att, acc_att, cer_att, wer_att, pred_err_att = self._calc_att_loss(
+                encoder_out, encoder_out_lens, text, text_lengths, 
+                noisy_label_flag, 
+                decoder_meta_out_prob, 
+                inspect
             )
-        # 2a.1. Caculate statistics
-        if inspect:
-            self.stat(decoder_out_att, ys_out_pad_att)
             
         # 2b. CTC branch
         if self.ctc_weight == 0.0 or noisy_label_flag:
@@ -344,22 +366,15 @@ class ESPnetASRModel(AbsESPnetModel):
         ys_pad_lens: torch.Tensor,
         noisy_label_flag=False,
         decoder_out_prob=None,
-        replacment_flag=True,
+        inspect=False
+        replacment_flag=False,
     ):
         ys_in_pad, ys_out_pad = add_sos_eos(ys_pad, self.sos, self.eos, self.ignore_id)
 
         if noisy_label_flag and replacment_flag:
             assert decoder_out_prob is not None
             from espnet.nets.pytorch_backend.nets_utils import pad_list    
-            bsz, tsz, _ = decoder_out_prob.size()
-            
-            # Select target label probability from pred_dist
-            decoder_out_prob = decoder_out_prob.view(bsz * tsz, -1)
-            decoder_out_prob = decoder_out_prob[
-                torch.arange(bsz * tsz),
-                ys_out_pad.view(bsz * tsz)
-            ]
-            decoder_out_prob = decoder_out_prob.view(bsz, tsz)
+            decoder_out_prob = confidence(decoder_out_prob, ys_out_pad)
 
             # Eliminate the <eos> token
             repl_mask = [prob[:l] < self.th for prob, l in zip(decoder_out_prob, ys_pad_lens)]
@@ -370,7 +385,7 @@ class ESPnetASRModel(AbsESPnetModel):
             for rm, y in zip(repl_mask, ys_in):
                 y[rm] = 1 # <unk> token
             ys_in = [torch.cat([_sos, y], dim=0) for y in ys_in]
-            ys_in_pad = pad_list(ys_in, self.eos)
+            ys_in_pad = pad_list(ys_in, self.eos).detach()
         ys_in_lens = ys_pad_lens + 1
 
         # 1. Forward decoder
@@ -387,7 +402,11 @@ class ESPnetASRModel(AbsESPnetModel):
                 samples = torch.multinomial(decoder_out_prob[i][:len(y)], 1).squeeze(-1)
                 y[rm] = samples[rm]
             ys_out = [torch.cat([y, _ignore], dim=0) for y in ys_out]
-            ys_out_pad = pad_list(ys_out, self.ignore_id)
+            ys_out_pad = pad_list(ys_out, self.ignore_id).detach()
+
+        # prior statistic caculator
+        if inspect:
+            self.stat(torch.softmax(decoder_out, dim=-1), ys_out_pad)
 
         # 2. Compute attention loss
         loss_att = self.criterion_att(decoder_out, ys_out_pad)
@@ -413,7 +432,7 @@ class ESPnetASRModel(AbsESPnetModel):
             ys_hat = decoder_out.argmax(dim=-1)
             cer_att, wer_att = self.error_calculator(ys_hat.cpu(), ys_pad.cpu())
 
-        return loss_att, decoder_out, ys_out_pad, acc_att, cer_att, wer_att, pred_err_att
+        return loss_att, acc_att, cer_att, wer_att, pred_err_att
 
     def _calc_ctc_loss(
         self,
@@ -441,6 +460,10 @@ class ESPnetASRModel(AbsESPnetModel):
     ):
         raise NotImplementedError
 
+    ###########################################################
+    ############     Meta-loop related methods     ############
+    ###########################################################
+
     @torch.no_grad()
     def _meta_forward(
         self,
@@ -450,12 +473,13 @@ class ESPnetASRModel(AbsESPnetModel):
         text_lengths,
         lam=0.6,
     ):
-        assert self.meta_asr is not None
+        assert self.meta_encoder is not None
+        assert self.meta_decoder is not None
         ys_in_pad, _ = add_sos_eos(text, self.sos, self.eos, self.ignore_id)
         ys_in_lens = text_lengths + 1
 
-        encoder_meta_out, encoder_meta_out_lens = self.meta_asr.encode(speech, speech_lengths)
-        decoder_meta_out, _ = self.meta_asr.decoder(encoder_meta_out, encoder_meta_out_lens, ys_in_pad, ys_in_lens)
+        encoder_meta_out, encoder_meta_out_lens = self._meta_encode(speech, speech_lengths)
+        decoder_meta_out, _ = self.meta_decoder(encoder_meta_out, encoder_meta_out_lens, ys_in_pad, ys_in_lens)
 
         decoder_out_prob = torch.softmax(decoder_meta_out, dim=-1)
         if self.lm is not None:
@@ -466,3 +490,43 @@ class ESPnetASRModel(AbsESPnetModel):
         
         return decoder_out_prob
 
+    def _meta_encode(
+        self, speech: torch.Tensor, speech_lengths: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Frontend + Encoder. Note that this method is used by asr_inference.py
+
+        Args:
+            speech: (Batch, Length, ...)
+            speech_lengths: (Batch, )
+        """
+        with autocast(False):
+            # 1. Extract feats
+            feats, feats_lengths = self._extract_feats(speech, speech_lengths)
+
+            # 2. Data augmentation
+            if self.specaug is not None and self.training:
+                feats, feats_lengths = self.specaug(feats, feats_lengths)
+
+            # 3. Normalization for feature: e.g. Global-CMVN, Utterance-CMVN
+            if self.normalize is not None:
+                feats, feats_lengths = self.normalize(feats, feats_lengths)
+
+        # Pre-encoder, e.g. used for raw input data
+        if self.preencoder is not None:
+            feats, feats_lengths = self.preencoder(feats, feats_lengths)
+
+        # 4. Forward encoder
+        # feats: (Batch, Length, Dim)
+        # -> encoder_out: (Batch, Length2, Dim2)
+        encoder_out, encoder_out_lens, _ = self.meta_encoder(feats, feats_lengths)
+
+        assert encoder_out.size(0) == speech.size(0), (
+            encoder_out.size(),
+            speech.size(0),
+        )
+        assert encoder_out.size(1) <= encoder_out_lens.max(), (
+            encoder_out.size(),
+            encoder_out_lens.max(),
+        )
+
+        return encoder_out, encoder_out_lens

@@ -68,23 +68,24 @@ specaug_conf:
 
 # We should run this stage with ngpu == 1
 # batch_bins: 100000000 -> 4gpu settings
-# stage: 2
-# max_epoch: 1
-# batch_bins: 26000000 
-# init_param: 
-#     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:encoder:encoder
-#     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:decoder:decoder
-
-stage: 3
-max_epoch: 24
-batch_bins: 14000000
+stage: 2
+max_epoch: 1
+batch_bins: 26000000 
 init_param: 
-    - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage2/1epoch.pth:stat:stat
-    - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:encoder:meta_asr.encoder
-    - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:decoder:meta_asr.decoder
-unused_parameters: true
-freeze_param:
-    - asr
+    - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:encoder:encoder
+    - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:decoder:decoder
+
+# stage: 3
+# max_epoch: 24
+# batch_bins: 14000000
+# init_param: 
+#     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage2/1epoch.pth:stat:stat
+#     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:encoder:meta_encoder
+#     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:decoder:meta_decoder
+# unused_parameters: true
+# freeze_param:
+#     - meta_encoder
+#     - meta_decoder
 
 # lm: transformer
 # lm_conf:

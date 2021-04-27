@@ -822,36 +822,50 @@ class ASRTask(AbsTask):
         rnnt_decoder = None
 
         # 8. Build model
-        meta_model = ESPnetASRModel(
-            vocab_size=vocab_size,
-            frontend=frontend,
-            specaug=specaug,
-            normalize=normalize,
-            preencoder=preencoder,
-            lm=lm,
-            encoder=encoder,
-            decoder=decoder,
-            ctc=ctc,
-            meta_asr=None,
-            rnnt_decoder=rnnt_decoder,
-            token_list=token_list,
-            **args.model_conf,
-        )
-        model = ESPnetASRModel(
-            vocab_size=vocab_size,
-            frontend=frontend,
-            specaug=specaug,
-            normalize=normalize,
-            preencoder=preencoder,
-            lm=lm,
-            encoder=encoder,
-            decoder=decoder,
-            ctc=ctc,
-            meta_asr=meta_model,
-            rnnt_decoder=rnnt_decoder,
-            token_list=token_list,
-            **args.model_conf,
-        )
+        if args.stage == 3:
+            encoder_class = encoder_choices.get_class(args.encoder)
+            meta_encoder = encoder_class(input_size=input_size, **args.encoder_conf)
+            decoder_class = decoder_choices.get_class(args.decoder)
+            meta_decoder = decoder_class(
+                vocab_size=vocab_size,
+                encoder_output_size=encoder.output_size(),
+                **args.decoder_conf,
+            )
+            model = ESPnetASRModel(
+                vocab_size=vocab_size,
+                frontend=frontend,
+                specaug=specaug,
+                normalize=normalize,
+                preencoder=preencoder,
+                lm=lm,
+                encoder=encoder,
+                decoder=decoder,
+                ctc=ctc,
+                meta_encoder=meta_encoder,
+                meta_decoder=meta_decoder,
+                stat=True,
+                rnnt_decoder=rnnt_decoder,
+                token_list=token_list,
+                **args.model_conf,
+            )
+        else:
+            model = ESPnetASRModel(
+                vocab_size=vocab_size,
+                frontend=frontend,
+                specaug=specaug,
+                normalize=normalize,
+                preencoder=preencoder,
+                lm=lm,
+                encoder=encoder,
+                decoder=decoder,
+                ctc=ctc,
+                meta_encoder=None,
+                meta_decoder=None,
+                stat=True,
+                rnnt_decoder=rnnt_decoder,
+                token_list=token_list,
+                **args.model_conf,
+            )
 
         # FIXME(kamo): Should be done in model?
         # 9. Initialize
