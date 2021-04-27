@@ -810,18 +810,18 @@ class Trainer:
             if no_forward_run:
                 continue
 
-            retval = model(**batch, inspect=True, noisy_label_flag=True)
-            if isinstance(retval, dict):
-                stats = retval["stats"]
-                weight = retval["weight"]
-            else:
-                _, stats, weight = retval
+            model._meta_collect_stats(**batch)
+            # if isinstance(retval, dict):
+            #     stats = retval["stats"]
+            #     weight = retval["weight"]
+            # else:
+            #     _, stats, weight = retval
 
             # update the histogram parameter
             model.stat.backward()
 
-            reporter.register(stats, weight)
-            reporter.next()
+            # reporter.register(stats, weight)
+            # reporter.next()
 
     @classmethod
     @torch.no_grad()
