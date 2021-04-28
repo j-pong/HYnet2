@@ -446,6 +446,7 @@ class ESPnetASRModel(AbsESPnetModel):
     ###########################################################
     ############     Meta-loop related methods     ############
     ###########################################################
+    
     def _meta_collect_stats(
         self,
         speech: torch.Tensor,
