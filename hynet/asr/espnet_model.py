@@ -358,6 +358,7 @@ class ESPnetASRModel(AbsESPnetModel):
         decoder_out_prob=None,
     ):
         ys_in_pad, ys_out_pad = add_sos_eos(ys_pad, self.sos, self.eos, self.ignore_id)
+        # Replace the input labels
         if replace_label_flag:
             from espnet.nets.pytorch_backend.nets_utils import pad_list    
             confid = calc_confidence(decoder_out_prob, ys_out_pad)
@@ -378,7 +379,7 @@ class ESPnetASRModel(AbsESPnetModel):
         decoder_out, _ = self.decoder(
             encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens
         )
-        # Replace the low confidence target labels
+        # Replace the target labels
         if replace_label_flag:
             decoder_out_prob = torch.softmax(decoder_out, dim=-1)
             
