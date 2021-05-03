@@ -171,7 +171,7 @@ class ESPnetASRModel(AbsESPnetModel):
         self.stat = ESPnetStatistic(
             ignore_id=ignore_id
         )
-        self.th = 0.18
+        self.th = 0.12
         # Pre-trained ASR encoder-decoder archictecture
         self.meta_encoder = meta_encoder
         self.meta_decoder = meta_decoder

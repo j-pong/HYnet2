@@ -1147,7 +1147,7 @@ if ! "${skip_eval}"; then
             log "Decoding started... log: '${_logdir}/asr_inference.*.log'"
             # shellcheck disable=SC2086
             ${_cmd} --gpu "${_ngpu}" JOB=1:"${_nj}" "${_logdir}"/asr_inference.JOB.log \
-                ${python} -m espnet2.bin.asr_inference \
+                ${python} -m hynet.bin.asr_inference \
                     --ngpu "${_ngpu}" \
                     --data_path_and_name_and_type "${_data}/${_scp},speech,${_type}" \
                     --key_file "${_logdir}"/keys.JOB.scp \
