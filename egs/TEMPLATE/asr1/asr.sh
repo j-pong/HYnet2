@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 # Set bash to 'debug' mode, it will exit on :
 # -e 'error', -u 'undefined variable', -o ... 'error in pipeline', -x 'print commands',
@@ -30,7 +30,6 @@ skip_train=false     # Skip training stages.
 skip_eval=false      # Skip decoding and evaluation stages.
 skip_upload=true     # Skip packing and uploading stages.
 ngpu=1               # The number of gpus ("0" uses cpu, otherwise use gpu).
-ngpu_ids=
 num_nodes=1          # The number of nodes.
 nj=32                # The number of parallel jobs.
 inference_nj=32      # The number of parallel jobs in decoding.
@@ -104,7 +103,6 @@ download_model= # Download a model from Model Zoo and use it for decoding.
 
 # [Task dependent] Set the datadir name created by local/data.sh
 train_set=       # Name of training set.
-train_pseudo_set=
 valid_set=       # Name of validation set used for monitoring/tuning network training.
 test_sets=       # Names of test sets. Multiple items (e.g., both dev and eval sets) can be specified.
 bpe_train_text=  # Text file path of bpe training set.
@@ -115,6 +113,7 @@ nlsyms_txt=none  # Non-linguistic symbol list if existing.
 cleaner=none     # Text cleaner.
 g2p=none         # g2p method (needed if token_type=phn).
 lang=noinfo      # The language type of corpus.
+score_opts=                # The options given to sclite scoring
 local_score_opts=          # The options given to local/score.sh.
 asr_speech_fold_length=800 # fold_length for speech data during ASR training.
 asr_text_fold_length=150   # fold_length for text data during ASR training.
@@ -212,6 +211,7 @@ Options:
     --cleaner       # Text cleaner (default="${cleaner}").
     --g2p           # g2p method (default="${g2p}").
     --lang          # The language type of corpus (default=${lang}).
+    --score_opts             # The options given to sclite scoring (default="{score_opts}").
     --local_score_opts       # The options given to local/score.sh (default="{local_score_opts}").
     --asr_speech_fold_length # fold_length for speech data during ASR training (default="${asr_speech_fold_length}").
     --asr_text_fold_length   # fold_length for text data during ASR training (default="${asr_text_fold_length}").
@@ -437,8 +437,8 @@ if ! "${skip_data_prep}"; then
             # If nothing is need, then format_wav_scp.sh does nothing:
             # i.e. the input file format and rate is same as the output.
 
-            for dset in "${train_set}" "${train_pseudo_set}"; do
-                if [ "${dset}" = "${train_set}" ] || [ "${dset}" = "${train_pseudo_set}" ] || [ "${dset}" = "${valid_set}" ]; then
+            for dset in "${train_set}" "${valid_set}" ${test_sets}; do
+                if [ "${dset}" = "${train_set}" ] || [ "${dset}" = "${valid_set}" ]; then
                     _suf="/org"
                 else
                     _suf=""
@@ -527,7 +527,7 @@ if ! "${skip_data_prep}"; then
         log "Stage 4: Remove long/short data: ${data_feats}/org -> ${data_feats}"
 
         # NOTE(kamo): Not applying to test_sets to keep original data
-        for dset in "${train_set}" "${train_pseudo_set}" "${valid_set}"; do
+        for dset in "${train_set}" "${valid_set}"; do
 
             # Copy data dir
             utils/copy_data_dir.sh --validate_opts --non-print "${data_feats}/org/${dset}" "${data_feats}/${dset}"
@@ -846,7 +846,6 @@ if ! "${skip_train}"; then
 
     if [ ${stage} -le 9 ] && [ ${stop_stage} -ge 9 ]; then
         _asr_train_dir="${data_feats}/${train_set}"
-        _asr_train_pseudo_dir="${data_feats}/${train_pseudo_set}"
         _asr_valid_dir="${data_feats}/${valid_set}"
         log "Stage 9: ASR collect stats: train_set=${_asr_train_dir}, valid_set=${_asr_valid_dir}"
 
@@ -879,20 +878,12 @@ if ! "${skip_train}"; then
         mkdir -p "${_logdir}"
 
         # Get the minimum number among ${nj} and the number lines of input files
-        _nj=$(min "${nj}" "$(<${_asr_train_dir}/${_scp} wc -l)" "$(<${_asr_train_pseudo_dir}/${_scp} wc -l)" "$(<${_asr_valid_dir}/${_scp} wc -l)")
+        _nj=$(min "${nj}" "$(<${_asr_train_dir}/${_scp} wc -l)" "$(<${_asr_valid_dir}/${_scp} wc -l)")
 
         key_file="${_asr_train_dir}/${_scp}"
         split_scps=""
         for n in $(seq "${_nj}"); do
             split_scps+=" ${_logdir}/train.${n}.scp"
-        done
-        # shellcheck disable=SC2086
-        utils/split_scp.pl "${key_file}" ${split_scps}
-
-        key_file="${_asr_train_pseudo_dir}/${_scp}"
-        split_scps=""
-        for n in $(seq "${_nj}"); do
-            split_scps+=" ${_logdir}/train_pseudo.${n}.scp"
         done
         # shellcheck disable=SC2086
         utils/split_scp.pl "${key_file}" ${split_scps}
@@ -917,7 +908,7 @@ if ! "${skip_train}"; then
 
         # shellcheck disable=SC2086
         ${train_cmd} JOB=1:"${_nj}" "${_logdir}"/stats.JOB.log \
-            ${python} -m hynet.bin.asr_train \
+            ${python} -m espnet2.bin.asr_train \
                 --collect_stats true \
                 --use_preprocessor true \
                 --bpemodel "${bpemodel}" \
@@ -928,12 +919,9 @@ if ! "${skip_train}"; then
                 --g2p "${g2p}" \
                 --train_data_path_and_name_and_type "${_asr_train_dir}/${_scp},speech,${_type}" \
                 --train_data_path_and_name_and_type "${_asr_train_dir}/text,text,text" \
-                --train_pseudo_data_path_and_name_and_type "${_asr_train_pseudo_dir}/${_scp},speech,${_type}" \
-                --train_pseudo_data_path_and_name_and_type "${_asr_train_pseudo_dir}/text,text,text" \
                 --valid_data_path_and_name_and_type "${_asr_valid_dir}/${_scp},speech,${_type}" \
                 --valid_data_path_and_name_and_type "${_asr_valid_dir}/text,text,text" \
                 --train_shape_file "${_logdir}/train.JOB.scp" \
-                --train_pseudo_shape_file "${_logdir}/train_pseudo.JOB.scp" \
                 --valid_shape_file "${_logdir}/valid.JOB.scp" \
                 --output_dir "${_logdir}/stats.JOB" \
                 ${_opts} ${asr_args} || { cat "${_logdir}"/stats.1.log; exit 1; }
@@ -944,16 +932,12 @@ if ! "${skip_train}"; then
             _opts+="--input_dir ${_logdir}/stats.${i} "
         done
         # shellcheck disable=SC2086
-        ${python} -m hynet.bin.aggregate_stats_dirs ${_opts} --output_dir "${asr_stats_dir}"
+        ${python} -m espnet2.bin.aggregate_stats_dirs ${_opts} --output_dir "${asr_stats_dir}"
 
         # Append the num-tokens at the last dimensions. This is used for batch-bins count
         <"${asr_stats_dir}/train/text_shape" \
             awk -v N="$(<${token_list} wc -l)" '{ print $0 "," N }' \
             >"${asr_stats_dir}/train/text_shape.${token_type}"
-        
-        <"${asr_stats_dir}/train_pseudo/text_shape" \
-            awk -v N="$(<${token_list} wc -l)" '{ print $0 "," N }' \
-            >"${asr_stats_dir}/train_pseudo/text_shape.${token_type}"
 
         <"${asr_stats_dir}/valid/text_shape" \
             awk -v N="$(<${token_list} wc -l)" '{ print $0 "," N }' \
@@ -963,7 +947,6 @@ if ! "${skip_train}"; then
 
     if [ ${stage} -le 10 ] && [ ${stop_stage} -ge 10 ]; then
         _asr_train_dir="${data_feats}/${train_set}"
-        _asr_train_pseudo_dir="${data_feats}/${train_pseudo_set}"
         _asr_valid_dir="${data_feats}/${valid_set}"
         log "Stage 10: ASR Training: train_set=${_asr_train_dir}, valid_set=${_asr_valid_dir}"
 
@@ -998,15 +981,39 @@ if ! "${skip_train}"; then
             _opts+="--normalize=global_mvn --normalize_conf stats_file=${asr_stats_dir}/train/feats_stats.npz "
         fi
 
-        _opts+="--train_data_path_and_name_and_type ${_asr_train_dir}/${_scp},speech,${_type} "
-        _opts+="--train_data_path_and_name_and_type ${_asr_train_dir}/text,text,text "
-        _opts+="--train_shape_file ${asr_stats_dir}/train/speech_shape "
-        _opts+="--train_shape_file ${asr_stats_dir}/train/text_shape.${token_type} "
+        if [ "${num_splits_asr}" -gt 1 ]; then
+            # If you met a memory error when parsing text files, this option may help you.
+            # The corpus is split into subsets and each subset is used for training one by one in order,
+            # so the memory footprint can be limited to the memory required for each dataset.
 
-        _opts+="--train_pseudo_data_path_and_name_and_type ${_asr_train_pseudo_dir}/${_scp},speech,${_type} "
-        _opts+="--train_pseudo_data_path_and_name_and_type ${_asr_train_pseudo_dir}/text,text,text "
-        _opts+="--train_pseudo_shape_file ${asr_stats_dir}/train_pseudo/speech_shape "
-        _opts+="--train_pseudo_shape_file ${asr_stats_dir}/train_pseudo/text_shape.${token_type} "
+            _split_dir="${asr_stats_dir}/splits${num_splits_asr}"
+            if [ ! -f "${_split_dir}/.done" ]; then
+                rm -f "${_split_dir}/.done"
+                ${python} -m espnet2.bin.split_scps \
+                  --scps \
+                      "${_asr_train_dir}/${_scp}" \
+                      "${_asr_train_dir}/text" \
+                      "${asr_stats_dir}/train/speech_shape" \
+                      "${asr_stats_dir}/train/text_shape.${token_type}" \
+                  --num_splits "${num_splits_asr}" \
+                  --output_dir "${_split_dir}"
+                touch "${_split_dir}/.done"
+            else
+                log "${_split_dir}/.done exists. Spliting is skipped"
+            fi
+
+            _opts+="--train_data_path_and_name_and_type ${_split_dir}/${_scp},speech,${_type} "
+            _opts+="--train_data_path_and_name_and_type ${_split_dir}/text,text,text "
+            _opts+="--train_shape_file ${_split_dir}/speech_shape "
+            _opts+="--train_shape_file ${_split_dir}/text_shape.${token_type} "
+            _opts+="--multiple_iterator true "
+
+        else
+            _opts+="--train_data_path_and_name_and_type ${_asr_train_dir}/${_scp},speech,${_type} "
+            _opts+="--train_data_path_and_name_and_type ${_asr_train_dir}/text,text,text "
+            _opts+="--train_shape_file ${asr_stats_dir}/train/speech_shape "
+            _opts+="--train_shape_file ${asr_stats_dir}/train/text_shape.${token_type} "
+        fi
 
         log "Generate '${asr_exp}/run.sh'. You can resume the process from stage 10 using this script"
         mkdir -p "${asr_exp}"; echo "${run_args} --stage 10 \"\$@\"; exit \$?" > "${asr_exp}/run.sh"; chmod +x "${asr_exp}/run.sh"
@@ -1028,7 +1035,7 @@ if ! "${skip_train}"; then
             --num_nodes "${num_nodes}" \
             --init_file_prefix "${asr_exp}"/.dist_init_ \
             --multiprocessing_distributed true -- \
-            CUDA_VISIBLE_DEVICES=${ngpu_ids} ${python} -m hynet.bin.asr_train \
+            ${python} -m espnet2.bin.asr_train \
                 --use_preprocessor true \
                 --bpemodel "${bpemodel}" \
                 --token_type "${token_type}" \
@@ -1147,7 +1154,7 @@ if ! "${skip_eval}"; then
             log "Decoding started... log: '${_logdir}/asr_inference.*.log'"
             # shellcheck disable=SC2086
             ${_cmd} --gpu "${_ngpu}" JOB=1:"${_nj}" "${_logdir}"/asr_inference.JOB.log \
-                ${python} -m hynet.bin.asr_inference \
+                ${python} -m espnet2.bin.asr_inference \
                     --ngpu "${_ngpu}" \
                     --data_path_and_name_and_type "${_data}/${_scp},speech,${_type}" \
                     --key_file "${_logdir}"/keys.JOB.scp \
@@ -1263,6 +1270,7 @@ if ! "${skip_eval}"; then
                 fi
 
                 sclite \
+		    ${score_opts} \
                     -r "${_scoredir}/ref.trn" trn \
                     -h "${_scoredir}/hyp.trn" trn \
                     -i rm -o all stdout > "${_scoredir}/result.txt"

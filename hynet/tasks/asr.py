@@ -14,6 +14,7 @@ from typeguard import check_return_type
 
 from espnet2.asr.ctc import CTC
 from espnet2.asr.decoder.abs_decoder import AbsDecoder
+from espnet2.asr.decoder.rnn_decoder import RNNDecoder
 from espnet2.asr.decoder.transformer_decoder import (
     DynamicConvolution2DTransformerDecoder,  # noqa: H301
 )
@@ -45,6 +46,7 @@ from espnet2.layers.abs_normalize import AbsNormalize
 from espnet2.layers.global_mvn import GlobalMVN
 from espnet2.layers.utterance_mvn import UtteranceMVN
 from espnet2.tasks.abs_task import AbsTask
+from espnet2.torch_utils.initialize import initialize
 from espnet2.train.class_choices import ClassChoices
 from espnet2.train.collate_fn import CommonCollateFn
 from espnet2.train.preprocessor import CommonPreprocessor
@@ -73,7 +75,6 @@ from hynet.main_funcs.collect_stats import collect_stats
 from hynet.train.trainer import Trainer
 from hynet.asr.espnet_model import ESPnetASRModel
 from hynet.asr.decoder.rnn_decoder import RNNDecoder
-from hynet.torch_utils.initialize import initialize
 
 from espnet2.tasks.abs_task import IteratorOptions
 
@@ -493,7 +494,8 @@ class ASRTask(AbsTask):
 
         # 0. Init distributed process
         distributed_option = build_dataclass(DistributedOption, args)
-        distributed_option.init()
+        # Setting distributed_option.dist_rank, etc.
+        distributed_option.init_options()
 
         # NOTE(kamo): Don't use logging before invoking logging.basicConfig()
         if not distributed_option.distributed or distributed_option.dist_rank == 0:
@@ -522,6 +524,8 @@ class ASRTask(AbsTask):
                 f":{distributed_option.dist_rank}/{distributed_option.dist_world_size}]"
                 f" %(asctime)s (%(module)s:%(lineno)d) %(levelname)s: %(message)s",
             )
+        # Invoking torch.distributed.init_process_group
+        distributed_option.init_torch_distributed()
 
         # 1. Set random-seed
         set_all_random_seed(args.seed)
@@ -607,6 +611,7 @@ class ASRTask(AbsTask):
             # Perform on collect_stats mode. This mode has two roles
             # - Derive the length and dimension of all input data
             # - Accumulate feats, square values, and the length for whitening
+            logging.info(args)
 
             if args.valid_batch_size is None:
                 args.valid_batch_size = args.batch_size

@@ -1,10 +1,10 @@
 #!/bin/bash
 
-rm -rf espnet
-git clone https://github.com/espnet/espnet
+# rm -rf espnet
+# git clone https://github.com/espnet/espnet
 
-# HYnet is extension of espnet
-cp -r espnet/tools/* ./
+# # HYnet is extension of espnet
+# cp -r espnet/tools/* ./
 
 # The espnet installation process https://espnet.github.io/espnet/installation.html
 . ./setup_cuda_env.sh /usr/local/cuda

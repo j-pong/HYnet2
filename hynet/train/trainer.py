@@ -14,15 +14,12 @@ from typing import Sequence
 from typing import Tuple
 from typing import Union
 
-import random
 import humanfriendly
 import numpy as np
 import torch
 import torch.nn
 import torch.optim
 from typeguard import check_argument_types
-
-from tqdm import tqdm
 
 from espnet2.iterators.abs_iter_factory import AbsIterFactory
 from espnet2.main_funcs.average_nbest_models import average_nbest_models
@@ -37,9 +34,13 @@ from espnet2.torch_utils.recursive_op import recursive_average
 from espnet2.torch_utils.set_all_random_seed import set_all_random_seed
 from espnet2.train.abs_espnet_model import AbsESPnetModel
 from espnet2.train.distributed_utils import DistributedOption
-from espnet2.train.reporter import Reporter
-from espnet2.train.reporter import SubReporter
 from espnet2.utils.build_dataclass import build_dataclass
+
+# Custom
+import random
+from tqdm import tqdm
+from hynet.train.reporter import Reporter
+from hynet.train.reporter import SubReporter
 
 if LooseVersion(torch.__version__) >= LooseVersion("1.1.0"):
     from torch.utils.tensorboard import SummaryWriter
@@ -170,7 +171,7 @@ class Trainer:
         optimizers: Sequence[torch.optim.Optimizer],
         schedulers: Sequence[Optional[AbsScheduler]],
         train_iter_factory: AbsIterFactory,
-        train_pseudo_iter_factory: AbsIterFactory,
+        train_pseudo_iter_factory: Optional[AbsIterFactory],
         valid_iter_factory: AbsIterFactory,
         plot_attention_iter_factory: Optional[AbsIterFactory],
         trainer_options,
@@ -252,7 +253,6 @@ class Trainer:
             dp_model = torch.nn.parallel.DataParallel(
                 model,
                 device_ids=list(range(distributed_option.ngpu)),
-                find_unused_parameters=trainer_options.unused_parameters,
             )
         else:
             # NOTE(kamo): DataParallel also should work with ngpu=1,
@@ -286,48 +286,19 @@ class Trainer:
 
             reporter.set_epoch(iepoch)
             # 1. Train and validation for one-epoch
-            noisy_iterator = train_pseudo_iter_factory.build_iter(iepoch)
-            clean_iterator = train_iter_factory.build_iter(iepoch)
-            if trainer_options.stage == 1:
-                with reporter.observe("train_clean") as sub_reporter:
-                    all_steps_are_invalid = cls.train_one_epoch(
-                        model=dp_model,
-                        optimizers=optimizers,
-                        schedulers=schedulers,
-                        iterator=clean_iterator,
-                        aux_iterator=None,
-                        reporter=sub_reporter,
-                        scaler=scaler,
-                        summary_writer=summary_writer,
-                        options=trainer_options,
-                        distributed_option=distributed_option,
-                    )
-            elif trainer_options.stage == 2:
-                if not distributed_option.distributed or distributed_option.dist_rank == 0:
-                    with reporter.observe("validate_confidence") as sub_reporter:
-                        all_steps_are_invalid = cls.validate_confidence_one_epoch(
-                            model=dp_model,
-                            iterator=noisy_iterator,
-                            reporter=sub_reporter,
-                            options=trainer_options,
-                            distributed_option=distributed_option,
-                        )
-            elif trainer_options.stage == 3:
-                with reporter.observe("train_clean_and_noisy") as sub_reporter:
-                    all_steps_are_invalid = cls.train_one_epoch(
-                        model=dp_model,
-                        optimizers=optimizers,
-                        schedulers=schedulers,
-                        iterator=clean_iterator, 
-                        aux_iterator=noisy_iterator,
-                        reporter=sub_reporter,
-                        scaler=scaler,
-                        summary_writer=summary_writer,
-                        options=trainer_options,
-                        distributed_option=distributed_option,
-                    )
-            else:
-                RuntimeError
+            with reporter.observe("train") as sub_reporter:
+                all_steps_are_invalid = cls.train_one_epoch(
+                    model=dp_model,
+                    optimizers=optimizers,
+                    schedulers=schedulers,
+                    iterator=train_iter_factory.build_iter(iepoch),
+                    aux_iterator=train_pseudo_iter_factory.build_iter(iepoch),
+                    reporter=sub_reporter,
+                    scaler=scaler,
+                    summary_writer=summary_writer,
+                    options=trainer_options,
+                    distributed_option=distributed_option,
+                )
 
             with reporter.observe("valid") as sub_reporter:
                 cls.validate_one_epoch(
@@ -468,7 +439,7 @@ class Trainer:
         cls,
         model: torch.nn.Module,
         iterator: Iterable[Tuple[List[str], Dict[str, torch.Tensor]]],
-        aux_iterator,
+        aux_iterator: Optional[Iterable[Tuple[List[str], Dict[str, torch.Tensor]]]],
         optimizers: Sequence[torch.optim.Optimizer],
         schedulers: Sequence[Optional[AbsScheduler]],
         scaler: Optional[GradScaler],
@@ -476,7 +447,7 @@ class Trainer:
         summary_writer: Optional[SummaryWriter],
         options: TrainerOptions,
         distributed_option: DistributedOption,
-        iterators_sampling_ratio=0.80,
+        prime_iter_sample_ratio=0.50,
     ) -> bool:
         assert check_argument_types()
 
@@ -503,48 +474,9 @@ class Trainer:
         iterator_stop = torch.tensor(0).to("cuda" if ngpu > 0 else "cpu")
 
         start_time = time.perf_counter()
-        iiter = 0
-        iterator = iter(iterator)
-        if aux_iterator is not None:
-            break_flag = 0
-            aux_iterator = iter(aux_iterator)
-        else:
-            break_flag = 1
-        while True:
-            # multiple iterator scheduling
-            iiter += 1
-
-            start = time.perf_counter()
-            if break_flag == 0:
-                # FIXME: hard coding for sampling ration of each dataset
-                select_prime_iter = random.random() > iterators_sampling_ratio
-            else:
-                if break_flag == 1:
-                    select_prime_iter = True
-                elif break_flag == 2:
-                    select_prime_iter = False
-                else:
-                    raise RuntimeError(f"{break_flag} is wrong to loop. Fix the loop variable.")
-
-            try:
-                if select_prime_iter:
-                    _, batch = iterator.next()
-                else:
-                    _, batch = aux_iterator.next()
-            except StopIteration:
-                if select_prime_iter:
-                    break_flag += 2
-                else:
-                    break_flag += 1
-            noisy_label_flag = not select_prime_iter
-            t = time.perf_counter() - start
-            reporter.register({"iter_time": t})
-
-            if break_flag == 3:
-                iiter -= 1
-                break
-            
-            # start of main loop
+        for iiter, ((_, batch), clean_label_flag) in enumerate(
+            reporter.measure_iter_time([iterator, aux_iterator], "iter_time", prime_iter_sample_ratio), 1
+        ):
             assert isinstance(batch, dict), type(batch)
 
             if distributed:
@@ -559,9 +491,7 @@ class Trainer:
 
             with autocast(scaler is not None):
                 with reporter.measure_time("forward_time"):
-                    retval = model(
-                        **batch, 
-                        noisy_label_flag=noisy_label_flag)
+                    retval = model(**batch, noisy_label_flag=~clean_label_flag)
 
                     # Note(kamo):
                     # Supporting two patterns for the returned value from the model
@@ -888,165 +818,3 @@ class Trainer:
                             f"{k}_{id_}", fig, reporter.get_epoch()
                         )
             reporter.next()
-
-# @classmethod
-# @torch.no_grad()
-# def train_transition_one_epoch(
-#     cls,
-#     model: torch.nn.Module,
-#     iterator: Iterable[Tuple[List[str], Dict[str, torch.Tensor]]],
-#     scaler: Optional[GradScaler],
-#     reporter: SubReporter,
-#     summary_writer: Optional[SummaryWriter],
-#     options: TrainerOptions,
-#     distributed_option: DistributedOption,
-# ) -> None:
-#     assert check_argument_types()
-
-#     log_interval = options.log_interval
-#     no_forward_run = options.no_forward_run
-#     ngpu = options.ngpu
-#     distributed = distributed_option.distributed
-
-#     if log_interval is None:
-#         try:
-#             log_interval = max(len(iterator) // 20, 10)
-#         except TypeError:
-#             log_interval = 100
-
-#     model.eval()
-
-#     iterator_stop = torch.tensor(0).to("cuda" if ngpu > 0 else "cpu")
-
-#     start_time = time.perf_counter()
-#     for iiter, (_, batch) in enumerate(
-#         reporter.measure_iter_time(iterator, "iter_time"), 1
-#     ):
-#         assert isinstance(batch, dict), type(batch)
-
-#         if distributed:
-#             torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
-#             if iterator_stop > 0:
-#                 break
-
-#         batch = to_device(batch, "cuda" if ngpu > 0 else "cpu")
-#         if no_forward_run:
-#             all_steps_are_invalid = False
-#             continue
-
-#         with autocast(scaler is not None):
-#             with reporter.measure_time("forward_time"):
-#                 retval = model(**batch, train_transition=True)
-
-#                 # Note(kamo):
-#                 # Supporting two patterns for the returned value from the model
-#                 #   a. dict type
-#                 if isinstance(retval, dict):
-#                     loss = retval["loss"]
-#                     stats = retval["stats"]
-#                     weight = retval["weight"]
-#                     optim_idx = retval.get("optim_idx")
-#                     if optim_idx is not None and not isinstance(optim_idx, int):
-#                         if not isinstance(optim_idx, torch.Tensor):
-#                             raise RuntimeError(
-#                                 "optim_idx must be int or 1dim torch.Tensor, "
-#                                 f"but got {type(optim_idx)}"
-#                             )
-#                         if optim_idx.dim() >= 2:
-#                             raise RuntimeError(
-#                                 "optim_idx must be int or 1dim torch.Tensor, "
-#                                 f"but got {optim_idx.dim()}dim tensor"
-#                             )
-#                         if optim_idx.dim() == 1:
-#                             for v in optim_idx:
-#                                 if v != optim_idx[0]:
-#                                     raise RuntimeError(
-#                                         "optim_idx must be 1dim tensor "
-#                                         "having same values for all entries"
-#                                     )
-#                             optim_idx = optim_idx[0].item()
-#                         else:
-#                             optim_idx = optim_idx.item()
-
-#                 #   b. tuple or list type
-#                 else:
-#                     loss, stats, weight = retval
-#                     optim_idx = None
-
-#             all_steps_are_invalid = False
-#             stats = {k: v for k, v in stats.items() if v is not None}
-#             # NOTE(j-pong): total number of each label calculated into model.corrupt_label_weight
-#             if ngpu > 1 or distributed:
-#                 p = model.module.cleaner.corrupt_mat
-#                 d_p = p.grad
-#                 # # Apply weighted averaging for loss and stats
-#                 # d_p = d_p * weight.type(d_p.dtype)
-
-#                 # if distributed, this method can also apply all_reduce()
-#                 stats, weight = recursive_average(stats, weight, distributed)
-
-#                 # # Now weight is summation over all workers
-#                 # d_p /= weight
-#             if distributed:
-#                 # NOTE(kamo): Multiply world_size because DistributedDataParallel
-#                 # automatically normalizes the gradient by world_size.
-#                 # d_p *= torch.distributed.get_world_size()
-#                 pass
-
-#             p.add_(-d_p, alpha=1)
-#             p.grad.detach_()
-#             p.grad.zero_()
-
-#         reporter.register(stats, weight)
-#         reporter.next()
-#         if iiter % log_interval == 0:
-#             logging.info(reporter.log_message(-log_interval))
-#             if summary_writer is not None:
-#                 reporter.tensorboard_add_scalar(summary_writer, -log_interval)
-    
-#     else:
-#         if distributed:
-#             iterator_stop.fill_(1)
-#             torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
-
-#     # the number of the each label class is saved to corrupt_labe_weight
-#     label_pop = model.module.cleaner.corrupt_label_weight
-#     # Take mean operator to corrpution matrix 'p' 
-#     # and set the row of the out-of-class label to identical label.
-#     p.div_(label_pop.unsqueeze(-1))
-#     for i in range(len(p.data)):
-#         if label_pop[i] == 0:
-#             # make identicla lable
-#             ident = torch.zeros_like(p.data[i])
-#             ident[i] = 1.0
-
-#             p.data[i] = ident
-#     p.grad.detach_()
-#     p.grad.zero_()
-
-#     return all_steps_are_invalid
-
-# elif trainer_options.stage == 0:
-#     # save the corrupt_mat to image
-#     import matplotlib.pyplot as plt
-#     import seaborn as sns
-
-#     corrupt_mat = model.cleaner.corrupt_mat.detach().cpu().numpy().astype(np.float32)
-#     sns.heatmap(np.log(corrupt_mat[:, :] + 1e-8))
-#     p = Path(output_dir / "corrupt_mat" / f"{iepoch}.ep.png")
-#     p.parent.mkdir(parents=True, exist_ok=True)
-#     plt.savefig(p, dpi=1000)
-#     plt.clf()
-
-#     corrupt_label_weight = model.cleaner.corrupt_label_weight.detach().cpu().numpy().astype(np.float32)
-#     plt.plot(np.log(corrupt_label_weight + 1e-8))
-#     plt.xlim(0, len(corrupt_label_weight))
-#     plt.grid()
-#     p = Path(output_dir / "corrupt_label_weight" / f"{iepoch}.ep.png")
-#     p.parent.mkdir(parents=True, exist_ok=True)
-#     plt.savefig(p)
-#     plt.clf()
-
-#     all_steps_are_invalid = True
-
-#     break

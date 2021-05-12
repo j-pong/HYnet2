@@ -171,7 +171,7 @@ class ESPnetASRModel(AbsESPnetModel):
         self.stat = ESPnetStatistic(
             ignore_id=ignore_id
         )
-        self.th = 0.12
+        self.th = 0.10
         # Pre-trained ASR encoder-decoder archictecture
         self.meta_encoder = meta_encoder
         self.meta_decoder = meta_decoder
@@ -225,7 +225,7 @@ class ESPnetASRModel(AbsESPnetModel):
             
         # 2a. Attention-decoder branch
         if self.ctc_weight == 1.0:
-            loss_att, acc_att, cer_att, wer_att, pred_err_att = None, None, None, None, None
+            loss_att, acc_att, cer_att, wer_att = None, None, None, None, None
         else:
             if replace_label_flag:
                 decoder_meta_out_prob = self._meta_forward(
@@ -237,7 +237,7 @@ class ESPnetASRModel(AbsESPnetModel):
             else:
                 decoder_meta_out_prob = None
 
-            loss_att, acc_att, cer_att, wer_att, pred_err_att = self._calc_att_loss(
+            loss_att, acc_att, cer_att, wer_att = self._calc_att_loss(
                 encoder_out, encoder_out_lens, text, text_lengths, 
                 replace_label_flag, 
                 decoder_meta_out_prob
@@ -265,12 +265,12 @@ class ESPnetASRModel(AbsESPnetModel):
         stats = dict(
             loss=loss.detach(),
             loss_att=loss_att.detach() if loss_att is not None else None,
-            # loss_ctc=loss_ctc.detach() if loss_ctc is not None else None,
+            loss_ctc=loss_ctc.detach() if loss_ctc is not None else None,
             acc=acc_att,
             cer=cer_att,
             wer=wer_att,
-            # cer_ctc=cer_ctc,
-            pred_err_att=pred_err_att,
+            cer_ctc=cer_ctc,
+            # pred_err_att=pred_err_att,
         )
 
         # force_gatherable: to-device and to-tensor if scalar for DataParallel
@@ -357,40 +357,49 @@ class ESPnetASRModel(AbsESPnetModel):
         replace_label_flag: bool=False,
         decoder_out_prob=None,
     ):
-        ys_in_pad, ys_out_pad = add_sos_eos(ys_pad, self.sos, self.eos, self.ignore_id)
-        # Replace the input labels
+        ys_in_pad, ys_out_pad = add_sos_eos(ys_pad, self.sos, self.eos, self.ignore_id)    
+        ys_in_lens = ys_pad_lens + 1
+
+        # Replace the labels
         if replace_label_flag:
+            assert decoder_out_prob is not None
             from espnet.nets.pytorch_backend.nets_utils import pad_list    
             confid = calc_confidence(decoder_out_prob, ys_out_pad)
 
-            # Eliminate the <eos> token
+            # Eliminate the <eos> token and find the position what we replace  
             repl_mask = [prob[:l] < self.th for prob, l in zip(confid, ys_pad_lens)]
-        
-            # Replace the low confidence input labels
-            _sos = ys_pad.new([self.sos])
+
+            with torch.no_grad():
+                decoder_out, _ = self.decoder(
+                    encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens
+                )
+                decoder_out_prob = torch.softmax(decoder_out, dim=-1).detach()
+
             ys_in = [y[y != self.ignore_id] for y in ys_pad.clone().detach()]
-            for rm, y in zip(repl_mask, ys_in):
-                y[rm] = 1 # <unk> token
+            for i, (rm, y) in enumerate(zip(repl_mask, ys_in)):
+                weight = decoder_out_prob[i]
+                weight = weight[:len(y)]
+                samples = torch.multinomial(weight, 1).squeeze(-1)
+                y[rm] = samples[rm]
+            _sos = ys_pad.new([self.sos])
             ys_in = [torch.cat([_sos, y], dim=0) for y in ys_in]
             ys_in_pad = pad_list(ys_in, self.eos).detach()
-        ys_in_lens = ys_pad_lens + 1
+            
+            ys_out = [y[y != self.ignore_id] for y in ys_pad.clone().detach()]
+            for i, (rm, y) in enumerate(zip(repl_mask, ys_out)):
+                weight = decoder_out_prob[i]
+                weight = weight[:len(y)]
+                samples = torch.multinomial(weight, 1).squeeze(-1)
+                y[rm] = samples[rm]
+            # _ignore = ys_pad.new([self.ignore_id])
+            _ignore = ys_pad.new([self.eos])
+            ys_out = [torch.cat([y, _ignore], dim=0) for y in ys_out]
+            ys_out_pad = pad_list(ys_out, self.ignore_id).detach()
 
         # 1. Forward decoder
         decoder_out, _ = self.decoder(
-            encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens
+                encoder_out, encoder_out_lens, ys_in_pad, ys_in_lens
         )
-        # Replace the target labels
-        if replace_label_flag:
-            decoder_out_prob = torch.softmax(decoder_out, dim=-1)
-            
-            _ignore = ys_pad.new([self.ignore_id])
-            ys_out = [y[y != self.ignore_id] for y in ys_pad.clone().detach()]
-            for i, (rm, y) in enumerate(zip(repl_mask, ys_out)):
-                weights = decoder_out_prob[i][:len(y)]
-                samples = torch.multinomial(weights, 1).squeeze(-1)
-                y[rm] = samples[rm]
-            ys_out = [torch.cat([y, _ignore], dim=0) for y in ys_out]
-            ys_out_pad = pad_list(ys_out, self.ignore_id).detach()
         
         # 2. Compute attention loss
         loss_att = self.criterion_att(decoder_out, ys_out_pad)
@@ -399,15 +408,15 @@ class ESPnetASRModel(AbsESPnetModel):
             ys_out_pad,
             ignore_label=self.ignore_id,
         )
-        if replace_label_flag:
-            num_repl = 0.0
-            num_total = 0.0
-            for m in repl_mask:
-                num_repl += m.sum()
-                num_total += len(m)
-            pred_err_att = float(num_repl) / float(num_total)
-        else:
-            pred_err_att = 0.0
+        # if replace_label_flag:
+        #     num_repl = 0.0
+        #     num_total = 0.0
+        #     for m in repl_mask:
+        #         num_repl += m.sum()
+        #         num_total += len(m)
+        #     pred_err_att = float(num_repl) / float(num_total)
+        # else:
+        #     pred_err_att = 0.0
 
         # Compute cer/wer using attention-decoder
         if self.training or self.error_calculator is None:
@@ -416,7 +425,7 @@ class ESPnetASRModel(AbsESPnetModel):
             ys_hat = decoder_out.argmax(dim=-1)
             cer_att, wer_att = self.error_calculator(ys_hat.cpu(), ys_pad.cpu())
 
-        return loss_att, acc_att, cer_att, wer_att, pred_err_att
+        return loss_att, acc_att, cer_att, wer_att
 
     def _calc_ctc_loss(
         self,

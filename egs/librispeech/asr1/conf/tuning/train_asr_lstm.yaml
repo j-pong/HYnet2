@@ -31,11 +31,6 @@ decoder_conf:
         aconv_chans: 10
         aconv_filts: 100
 
-model_conf:
-    ctc_weight: 0.5
-    lsm_weight: 0.1
-    length_normalized_loss: false
-
 optim: adadelta
 optim_conf:
     lr: 1.0
@@ -60,6 +55,11 @@ specaug_conf:
     num_time_mask: 2
 
 # Custom Settings
+# model_conf:
+#     ctc_weight: 0.5
+#     lsm_weight: 0.1
+#     length_normalized_loss: false
+
 # # training the clean labels
 # stage: 1
 # max_epoch: 80
@@ -75,9 +75,14 @@ specaug_conf:
 #     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:encoder:encoder
 #     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage1/79epoch.pth:decoder:decoder
 
+model_conf:
+    ctc_weight: 0.5
+    lsm_weight: 0.1
+    length_normalized_loss: false
+
 stage: 3
-max_epoch: 24
-batch_bins: 14000000
+max_epoch: 40
+batch_bins: 12000000
 accum_grad: 1
 init_param: 
     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage2/1epoch.pth:stat:stat

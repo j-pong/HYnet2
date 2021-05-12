@@ -21,8 +21,7 @@ inference_config=conf/decode_asr.yaml
 ./asr_semi.sh \
     --audio_format flac.ark \
     --lang en \
-    --ngpu 3 \
-    --ngpu_ids 0,2,3 \
+    --ngpu 4 \
     --nbpe 5000 \
     --max_wav_duration 30 \
     --asr_config "${asr_config}" \
