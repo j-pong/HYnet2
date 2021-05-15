@@ -70,8 +70,8 @@ class ESPnetASRModel(AbsESPnetModel):
         assert vocab_size == 32
 
         super().__init__()
-        self.sos = 28
-        self.eos = 30
+        self.sos = 2
+        self.eos = 2
         self.vocab_size = vocab_size
         self.ignore_id = ignore_id
         self.ctc_weight = ctc_weight
@@ -101,13 +101,6 @@ class ESPnetASRModel(AbsESPnetModel):
             )
         else:
             self.error_calculator = None
-        
-        # TODO: add normalization option in configure file
-        # from hynet.asr.encoder.wav2vec2_encoder import FairSeqWav2VecCtc
-        # from espnet2.asr.encoder.wav2vec2_encoder import FairSeqWav2Vec2Encoder
-        # if isinstance(self.encoder, FairSeqWav2VecCtc) or isinstance(self.encoder, FairSeqWav2Vec2Encoder):
-        #     self.wav2vec = True
-        self.wav2vec = False
 
     def forward(
         self,

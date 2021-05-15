@@ -71,6 +71,7 @@ from espnet2.utils.types import str2triple_str
 from espnet2.utils.yaml_no_alias_safe_dump import yaml_no_alias_safe_dump
 from espnet2.torch_utils.load_pretrained_model import load_pretrained_model
 
+from hynet.layers.fair_like_norm import FairNormalize
 from hynet.main_funcs.collect_stats import collect_stats
 from hynet.train.trainer import Trainer
 from hynet.asr.espnet_model import ESPnetASRModel
@@ -103,6 +104,7 @@ normalize_choices = ClassChoices(
     classes=dict(
         global_mvn=GlobalMVN,
         utterance_mvn=UtteranceMVN,
+        fair_like_norm=FairNormalize,
     ),
     type_check=AbsNormalize,
     default="utterance_mvn",
@@ -794,9 +796,8 @@ class ASRTask(AbsTask):
 
         # 3. Normalization layer
         if args.normalize is not None:
-            # normalize_class = normalize_choices.get_class(args.normalize)
-            # normalize = normalize_class(**args.normalize_conf)
-            normalize = None
+            normalize_class = normalize_choices.get_class(args.normalize)
+            normalize = normalize_class(**args.normalize_conf)
         else:
             normalize = None
 
