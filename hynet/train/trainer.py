@@ -447,7 +447,7 @@ class Trainer:
         summary_writer: Optional[SummaryWriter],
         options: TrainerOptions,
         distributed_option: DistributedOption,
-        prime_iter_sample_ratio=0.50,
+        prime_iter_sample_ratio=1.0,
     ) -> bool:
         assert check_argument_types()
 

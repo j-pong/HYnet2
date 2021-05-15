@@ -53,6 +53,7 @@ tools/moses/
 tools/mwerSegmenter/
 tools/nkf/
 tools/venv/
+tools/anaconda
 tools/sentencepiece/
 tools/swig/
 tools/warp-ctc/

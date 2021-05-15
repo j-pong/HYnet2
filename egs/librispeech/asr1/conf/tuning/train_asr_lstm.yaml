@@ -81,8 +81,8 @@ model_conf:
     length_normalized_loss: false
 
 stage: 3
-max_epoch: 40
-batch_bins: 12000000
+max_epoch: 180
+batch_bins: 52000000
 accum_grad: 1
 init_param: 
     - exp/asr_train_asr_lstm_raw_en_bpe5000_semi_stage2/1epoch.pth:stat:stat

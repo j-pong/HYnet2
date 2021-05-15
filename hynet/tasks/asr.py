@@ -74,9 +74,11 @@ from espnet2.torch_utils.load_pretrained_model import load_pretrained_model
 from hynet.main_funcs.collect_stats import collect_stats
 from hynet.train.trainer import Trainer
 from hynet.asr.espnet_model import ESPnetASRModel
-from hynet.asr.decoder.rnn_decoder import RNNDecoder
+from hynet.asr.encoder.wav2vec2_encoder import FairSeqWav2VecCtc
+from hynet.asr.ctc import CTC
 
 from espnet2.tasks.abs_task import IteratorOptions
+from espnet2.tasks.abs_task import scheduler_classes
 
 from espnet2.lm.abs_model import AbsLM
 from espnet2.lm.espnet_model import ESPnetLanguageModel
@@ -124,6 +126,7 @@ encoder_choices = ClassChoices(
         vgg_rnn=VGGRNNEncoder,
         rnn=RNNEncoder,
         wav2vec2=FairSeqWav2Vec2Encoder,
+        wav2vec_ctc=FairSeqWav2VecCtc,
     ),
     type_check=AbsEncoder,
     default="rnn",
@@ -791,8 +794,9 @@ class ASRTask(AbsTask):
 
         # 3. Normalization layer
         if args.normalize is not None:
-            normalize_class = normalize_choices.get_class(args.normalize)
-            normalize = normalize_class(**args.normalize_conf)
+            # normalize_class = normalize_choices.get_class(args.normalize)
+            # normalize = normalize_class(**args.normalize_conf)
+            normalize = None
         else:
             normalize = None
 
@@ -848,7 +852,6 @@ class ASRTask(AbsTask):
                 ctc=ctc,
                 meta_encoder=meta_encoder,
                 meta_decoder=meta_decoder,
-                stat=True,
                 rnnt_decoder=rnnt_decoder,
                 token_list=token_list,
                 **args.model_conf,
@@ -866,7 +869,6 @@ class ASRTask(AbsTask):
                 ctc=ctc,
                 meta_encoder=None,
                 meta_decoder=None,
-                stat=True,
                 rnnt_decoder=rnnt_decoder,
                 token_list=token_list,
                 **args.model_conf,
