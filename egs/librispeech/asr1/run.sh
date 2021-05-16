@@ -34,4 +34,5 @@ inference_config=conf/decode_asr.yaml
     --train_pseudo_set "${train_pseudo_set}" \
     --valid_set "${valid_set}" \
     --test_sets "${test_sets}" \
-    --bpe_train_text "data/train_960/text" "$@"
+    --bpe_train_text "data/train_960/text" \
+    --feats_normalize fair_like_norm "$@"

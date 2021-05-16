@@ -1,7 +1,7 @@
 batch_type: numel
-batch_bins: 8000000
-accum_grad: 1
-max_epoch: 10
+batch_bins: 1400000
+accum_grad: 8
+max_epoch: 35
 patience: none
 # The initialization method for model parameters
 init: xavier_uniform
@@ -9,9 +9,9 @@ best_model_criterion:
 -   - valid
     - acc
     - max
-keep_nbest_models: 10
+keep_nbest_models: 1
 
-freeze_param: ["decoder", "encoder.encoders.w2v_encoder.w2v_model",]
+freeze_param: ["decoder",]
 
 input_size: 768
 encoder: wav2vec_ctc
@@ -19,7 +19,7 @@ encoder_conf:
     output_size: 32
     normalize_before: true
     freeze_finetune_updates: 0
-    w2v_url: https://dl.fbaipublicfiles.com/fairseq/wav2vec/wav2vec_vox_100h_new.pt
+    w2v_url: https://dl.fbaipublicfiles.com/fairseq/wav2vec/wav2vec_vox_new.pt
     w2v_dir_path: ./downloads/wav2vec_pretrained_models
 
 model_conf:
@@ -32,15 +32,15 @@ optim_conf:
     lr: 0.01
 scheduler: warmuplr
 scheduler_conf:
-    warmup_steps: 20000
+    warmup_steps: 8000
 
 ctc_conf:
     ctc_type: fairctc
 
-unused_parameters: true
-
 frontend: null
 
-normalize: null
+normalize: fair_like_norm
 
 specaug: null
+
+unused_parameters: true

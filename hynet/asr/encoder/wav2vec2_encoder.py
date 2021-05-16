@@ -35,7 +35,7 @@ class FairSeqWav2VecCtc(AbsEncoder):
         input_size: int,
         w2v_url: str,
         w2v_dir_path: str = "./",
-        output_size: int = 256,
+        output_size: int = 32,
         normalize_before: bool = False,
         freeze_finetune_updates: int = 0,
     ):
@@ -46,6 +46,7 @@ class FairSeqWav2VecCtc(AbsEncoder):
             try:
                 import fairseq
                 from fairseq.models.wav2vec.wav2vec2 import Wav2Vec2Model
+                # from fairseq.models.wav2vec.wav2vec2_asr import Wav2VecCtc
             except Exception as e:
                 print("Error: FairSeq is not properly installed.")
                 print(
@@ -63,24 +64,23 @@ class FairSeqWav2VecCtc(AbsEncoder):
         )
         model = models[0]
 
-        from fairseq.models.wav2vec.wav2vec2_asr import Wav2VecCtc
-        if not isinstance(model, Wav2VecCtc):
-            raise Exception(
-                    "Error: pretrained models should be: "
-                    "'Wav2VecCTC' class"
+        if not isinstance(model, Wav2Vec2Model):
+            try:
+                model = model.w2v_encoder.w2v_model
+            except Exception as e:
+                print(
+                    "Error: pretrained models should be within: "
+                    "'Wav2Vec2Model, Wav2VecCTC' classes, etc."
                 )
+                raise e
 
         self.encoders = model
 
         self.pretrained_params = copy.deepcopy(model.state_dict())
 
-        if model.w2v_encoder.proj.out_features != output_size:
-            # TODO(xkc09): try LSTM
-            self.output_layer = torch.nn.Sequential(
-                torch.nn.Linear(model.w2v_encoder.proj.out_features, output_size),
-            )
-        else:
-            self.output_layer = None
+        self.output_layer = torch.nn.Sequential(
+            torch.nn.Linear(1024, output_size),
+        )
         
         self.freeze_finetune_updates = freeze_finetune_updates
         self.register_buffer("num_updates", torch.LongTensor([0]))
@@ -112,19 +112,16 @@ class FairSeqWav2VecCtc(AbsEncoder):
             logging.info("Start fine-tuning wav2vec parameters!")
 
         with torch.no_grad() if not ft else contextlib.nullcontext():
-            enc_outputs = self.encoders.w2v_encoder(
+            enc_outputs = self.encoders(
                 xs_pad,
                 masks,
-                tbc=False,
-                features_only=False,
+                features_only=True,
             )
 
-        xs_pad = enc_outputs["encoder_out"]  # (B,T,C),
+        xs_pad = enc_outputs["x"]  # (B,T,C),
         masks = enc_outputs["padding_mask"]  # (B, T)
 
-        if self.output_layer is not None:
-            xs_pad = self.output_layer(xs_pad)
-
+        xs_pad = self.output_layer(xs_pad)
 
         olens = (~masks).sum(dim=1)
 
