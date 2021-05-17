@@ -5,16 +5,13 @@ from setuptools import setup
 
 requirements = {
     "install": [
-        "kaldi_io",
-        "opencv-python==3.4.*",
-        "opencv-contrib-python==3.4.*",
         "matplotlib"
     ],
 }
 install_requires = requirements["install"]
 dirname = os.path.dirname(__file__)
 setup(name='hynet',
-      version='0.1.0',
+      version='1.0.0',
       author='jpong',
       author_email='ljh93ljh@gmail.com',
       description='hynet',
