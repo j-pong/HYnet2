@@ -29,10 +29,10 @@ model_conf:
 
 optim: adam
 optim_conf:
-    lr: 0.01
+    lr: 0.0003 # 0.00002 
 scheduler: warmuplr
 scheduler_conf:
-    warmup_steps: 8000
+    warmup_steps: 1600
 
 ctc_conf:
     ctc_type: fairctc
