@@ -33,7 +33,7 @@ class TriStageLR(_LRScheduler, AbsBatchStepScheduler):
         final_lr_scale: Union[int, float],
         hold_steps: Union[int, float],
         decay_steps: Union[int, float],
-        warmup_steps: Union[int, float] = 25000,
+        warmup_steps: Union[int, float],
         last_epoch: int = -1,
     ):
         if LooseVersion(torch.__version__) < LooseVersion("1.1.0"):
@@ -42,6 +42,8 @@ class TriStageLR(_LRScheduler, AbsBatchStepScheduler):
         assert check_argument_types()
 
         # calculate LR at each point
+        self.base_lrs = [group['lr'] for group in optimizer.param_groups]
+
         self.peak_lr = self.base_lrs[0]
         self.init_lr = init_lr_scale * self.base_lrs[0]
         self.final_lr = final_lr_scale * self.base_lrs[0]
@@ -104,10 +106,3 @@ class TriStageLR(_LRScheduler, AbsBatchStepScheduler):
             raise ValueError("Undefined stage")
 
         return [lr]
-        # step_num = self.last_epoch + 1
-        # return [
-        #     lr
-        #     * self.warmup_steps ** 0.5
-        #     * min(step_num ** -0.5, step_num * self.warmup_steps ** -1.5)
-        #     for lr in self.base_lrs
-        # ]

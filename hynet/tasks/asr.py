@@ -72,6 +72,14 @@ from espnet2.utils.types import str2triple_str
 from espnet2.utils.yaml_no_alias_safe_dump import yaml_no_alias_safe_dump
 from espnet2.torch_utils.load_pretrained_model import load_pretrained_model
 
+from espnet2.tasks.abs_task import IteratorOptions
+from espnet2.tasks.abs_task import scheduler_classes
+
+from espnet2.lm.abs_model import AbsLM
+from espnet2.lm.espnet_model import ESPnetLanguageModel
+from espnet2.lm.seq_rnn_lm import SequentialRNNLM
+from espnet2.lm.transformer_lm import TransformerLM
+
 from hynet.layers.fair_like_norm import FairNormalize
 from hynet.main_funcs.collect_stats import collect_stats
 from hynet.train.trainer import Trainer
@@ -79,36 +87,7 @@ from hynet.asr.espnet_model import ESPnetASRModel
 from hynet.asr.encoder.wav2vec2_encoder import FairSeqWav2VecCtc
 from hynet.asr.ctc import CTC
 
-from espnet2.tasks.abs_task import IteratorOptions
-
-scheduler_classes = dict(
-    ReduceLROnPlateau=torch.optim.lr_scheduler.ReduceLROnPlateau,
-    lambdalr=torch.optim.lr_scheduler.LambdaLR,
-    steplr=torch.optim.lr_scheduler.StepLR,
-    multisteplr=torch.optim.lr_scheduler.MultiStepLR,
-    exponentiallr=torch.optim.lr_scheduler.ExponentialLR,
-    CosineAnnealingLR=torch.optim.lr_scheduler.CosineAnnealingLR,
-)
-if LooseVersion(torch.__version__) >= LooseVersion("1.1.0"):
-    scheduler_classes.update(
-        noamlr=NoamLR,
-        warmuplr=WarmupLR,
-    )
-if LooseVersion(torch.__version__) >= LooseVersion("1.3.0"):
-    CosineAnnealingWarmRestarts = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
-    scheduler_classes.update(
-        cycliclr=torch.optim.lr_scheduler.CyclicLR,
-        onecyclelr=torch.optim.lr_scheduler.OneCycleLR,
-        CosineAnnealingWarmRestarts=CosineAnnealingWarmRestarts,
-    )
-# To lower keys
-optim_classes = {k.lower(): v for k, v in optim_classes.items()}
-scheduler_classes = {k.lower(): v for k, v in scheduler_classes.items()}
-
-from espnet2.lm.abs_model import AbsLM
-from espnet2.lm.espnet_model import ESPnetLanguageModel
-from espnet2.lm.seq_rnn_lm import SequentialRNNLM
-from espnet2.lm.transformer_lm import TransformerLM
+from hynet.schedulers.tri_stage_lr import TriStageLR
 
 frontend_choices = ClassChoices(
     name="frontend",
@@ -591,7 +570,8 @@ class ASRTask(AbsTask):
             name = getattr(args, f"scheduler{suf}")
             conf = getattr(args, f"scheduler{suf}_conf")
             if name is not None:
-                cls_ = scheduler_classes.get(name)
+                # cls_ = scheduler_classes.get(name)
+                cls_ = TriStageLR
                 if cls_ is None:
                     raise ValueError(
                         f"must be one of {list(scheduler_classes)}: {name}"

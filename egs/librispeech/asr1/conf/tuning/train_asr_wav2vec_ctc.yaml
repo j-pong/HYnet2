@@ -1,7 +1,7 @@
 batch_type: numel
 batch_bins: 1400000
 accum_grad: 8
-max_epoch: 35
+max_epoch: 35 # 100
 patience: none
 # The initialization method for model parameters
 init: xavier_uniform
@@ -33,13 +33,13 @@ optim_conf:
 # scheduler: warmuplr
 # scheduler_conf:
 #     warmup_steps: 1600
-scheduler: warmuplr
+scheduler: tristagelr
 scheduler_conf:
     init_lr_scale: 0.01
     final_lr_scale: 0.05
-    warmup_steps:
-    hold_steps:
-    decay_steps:
+    warmup_steps: 1200 # 400 stage is 1 epoch on 100 hour training dataset # 4000
+    hold_steps: 4800 # 
+    decay_steps: 6000
 
 ctc_conf:
     ctc_type: fairctc
