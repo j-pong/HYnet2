@@ -1,3 +1,5 @@
+import math
+
 from distutils.version import LooseVersion
 from typing import Union
 
@@ -8,7 +10,7 @@ from typeguard import check_argument_types
 from espnet2.schedulers.abs_scheduler import AbsBatchStepScheduler
 
 
-class WarmupLR(_LRScheduler, AbsBatchStepScheduler):
+class TriStageLR(_LRScheduler, AbsBatchStepScheduler):
     """The WarmupLR scheduler
 
     This scheduler is almost same as NoamLR Scheduler except for following difference:
@@ -57,9 +59,7 @@ class WarmupLR(_LRScheduler, AbsBatchStepScheduler):
             if self.warmup_steps != 0
             else 0
         )
-        self.decay_factor = -math.log(cfg.final_lr_scale) / self.decay_steps
-
-        self.warmup_steps = warmup_steps
+        self.decay_factor = -math.log(final_lr_scale) / self.decay_steps
 
         # __init__() must be invoked before setting field
         # because step() is also invoked in __init__()
@@ -69,9 +69,6 @@ class WarmupLR(_LRScheduler, AbsBatchStepScheduler):
         return f"{self.__class__.__name__}(warmup_steps={self.warmup_steps})"
 
     def _decide_stage(self, update_step):
-        """
-        return stage, and the corresponding steps within the current stage
-        """
         if update_step < self.warmup_steps:
             # warmup state
             return 0, update_step
@@ -93,29 +90,24 @@ class WarmupLR(_LRScheduler, AbsBatchStepScheduler):
         # still here ? constant lr stage
         return 3, update_step - offset
 
-    def step_update(self, num_updates):
-        """Update the learning rate after each update."""
-        stage, steps_in_stage = self._decide_stage(num_updates)
+    def get_lr(self):
+        stage, steps_in_stage = self._decide_stage(self.last_epoch + 1)
         if stage == 0:
-            self.lr = self.init_lr + self.warmup_rate * steps_in_stage
+            lr = self.init_lr + self.warmup_rate * steps_in_stage
         elif stage == 1:
-            self.lr = self.peak_lr
+            lr = self.peak_lr
         elif stage == 2:
-            self.lr = self.peak_lr * math.exp(-self.decay_factor * steps_in_stage)
+            lr = self.peak_lr * math.exp(-self.decay_factor * steps_in_stage)
         elif stage == 3:
-            self.lr = self.final_lr
+            lr = self.final_lr
         else:
             raise ValueError("Undefined stage")
 
-        self.optimizer.set_lr(self.lr)
-
-        return self.lr
-
-    def get_lr(self):
-        step_num = self.last_epoch + 1
-        return [
-            lr
-            * self.warmup_steps ** 0.5
-            * min(step_num ** -0.5, step_num * self.warmup_steps ** -1.5)
-            for lr in self.base_lrs
-        ]
+        return [lr]
+        # step_num = self.last_epoch + 1
+        # return [
+        #     lr
+        #     * self.warmup_steps ** 0.5
+        #     * min(step_num ** -0.5, step_num * self.warmup_steps ** -1.5)
+        #     for lr in self.base_lrs
+        # ]

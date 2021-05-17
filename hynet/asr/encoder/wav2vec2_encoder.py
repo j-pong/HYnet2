@@ -67,6 +67,7 @@ class FairSeqWav2VecCtc(AbsEncoder):
         if not isinstance(model, Wav2Vec2Model):
             try:
                 model = model.w2v_encoder.w2v_model
+                model.w2v_encoder.w2v_model.final_proj = None
             except Exception as e:
                 print(
                     "Error: pretrained models should be within: "

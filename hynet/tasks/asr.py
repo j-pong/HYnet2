@@ -59,6 +59,7 @@ from espnet2.utils.types import str_or_none
 
 # custom
 import os
+from distutils.version import LooseVersion
 from pathlib import Path
 
 from espnet2.torch_utils.model_summary import model_summary
@@ -79,7 +80,30 @@ from hynet.asr.encoder.wav2vec2_encoder import FairSeqWav2VecCtc
 from hynet.asr.ctc import CTC
 
 from espnet2.tasks.abs_task import IteratorOptions
-from espnet2.tasks.abs_task import scheduler_classes
+
+scheduler_classes = dict(
+    ReduceLROnPlateau=torch.optim.lr_scheduler.ReduceLROnPlateau,
+    lambdalr=torch.optim.lr_scheduler.LambdaLR,
+    steplr=torch.optim.lr_scheduler.StepLR,
+    multisteplr=torch.optim.lr_scheduler.MultiStepLR,
+    exponentiallr=torch.optim.lr_scheduler.ExponentialLR,
+    CosineAnnealingLR=torch.optim.lr_scheduler.CosineAnnealingLR,
+)
+if LooseVersion(torch.__version__) >= LooseVersion("1.1.0"):
+    scheduler_classes.update(
+        noamlr=NoamLR,
+        warmuplr=WarmupLR,
+    )
+if LooseVersion(torch.__version__) >= LooseVersion("1.3.0"):
+    CosineAnnealingWarmRestarts = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts
+    scheduler_classes.update(
+        cycliclr=torch.optim.lr_scheduler.CyclicLR,
+        onecyclelr=torch.optim.lr_scheduler.OneCycleLR,
+        CosineAnnealingWarmRestarts=CosineAnnealingWarmRestarts,
+    )
+# To lower keys
+optim_classes = {k.lower(): v for k, v in optim_classes.items()}
+scheduler_classes = {k.lower(): v for k, v in scheduler_classes.items()}
 
 from espnet2.lm.abs_model import AbsLM
 from espnet2.lm.espnet_model import ESPnetLanguageModel
