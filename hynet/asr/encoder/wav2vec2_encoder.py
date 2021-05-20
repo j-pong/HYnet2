@@ -67,20 +67,21 @@ class FairSeqWav2VecCtc(AbsEncoder):
         if not isinstance(model, Wav2Vec2Model):
             try:
                 model = model.w2v_encoder.w2v_model
-                model.w2v_encoder.w2v_model.final_proj = None
             except Exception as e:
                 print(
                     "Error: pretrained models should be within: "
                     "'Wav2Vec2Model, Wav2VecCTC' classes, etc."
                 )
                 raise e
-
+        model.final_proj = None
+        model.cfg.mask_prob=0.5
+        model.cfg.activation_dropout=0.1
+        
         self.encoders = model
-
         self.pretrained_params = copy.deepcopy(model.state_dict())
 
         self.output_layer = torch.nn.Sequential(
-            torch.nn.Linear(1024, output_size),
+            torch.nn.Linear(input_size, output_size),
         )
         
         self.freeze_finetune_updates = freeze_finetune_updates
@@ -116,6 +117,7 @@ class FairSeqWav2VecCtc(AbsEncoder):
             enc_outputs = self.encoders(
                 xs_pad,
                 masks,
+                mask=self.training,
                 features_only=True,
             )
 

@@ -34,7 +34,6 @@ from espnet2.asr.encoder.contextual_block_transformer_encoder import (
     ContextualBlockTransformerEncoder,  # noqa: H301
 )
 from espnet2.asr.encoder.vgg_rnn_encoder import VGGRNNEncoder
-from espnet2.asr.encoder.wav2vec2_encoder import FairSeqWav2Vec2Encoder
 from espnet2.asr.frontend.abs_frontend import AbsFrontend
 from espnet2.asr.frontend.default import DefaultFrontend
 from espnet2.asr.frontend.windowing import SlidingWindow
@@ -59,7 +58,6 @@ from espnet2.utils.types import str_or_none
 
 # custom
 import os
-from distutils.version import LooseVersion
 from pathlib import Path
 
 from espnet2.torch_utils.model_summary import model_summary
@@ -80,9 +78,11 @@ from espnet2.lm.espnet_model import ESPnetLanguageModel
 from espnet2.lm.seq_rnn_lm import SequentialRNNLM
 from espnet2.lm.transformer_lm import TransformerLM
 
-from hynet.layers.fair_like_norm import FairNormalize
 from hynet.main_funcs.collect_stats import collect_stats
+
 from hynet.train.trainer import Trainer
+
+from hynet.layers.fair_like_norm import FairNormalize
 from hynet.asr.espnet_model import ESPnetASRModel
 from hynet.asr.encoder.wav2vec2_encoder import FairSeqWav2VecCtc
 from hynet.asr.ctc import CTC
@@ -130,7 +130,6 @@ encoder_choices = ClassChoices(
         contextual_block_transformer=ContextualBlockTransformerEncoder,
         vgg_rnn=VGGRNNEncoder,
         rnn=RNNEncoder,
-        wav2vec2=FairSeqWav2Vec2Encoder,
         wav2vec_ctc=FairSeqWav2VecCtc,
     ),
     type_check=AbsEncoder,
