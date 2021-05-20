@@ -835,7 +835,7 @@ class ASRTask(AbsTask):
         rnnt_decoder = None
 
         # 8. Build model
-        if args.stage == 3:
+        if args.stage != 1:
             encoder_class = encoder_choices.get_class(args.encoder)
             meta_encoder = encoder_class(input_size=input_size, **args.encoder_conf)
             decoder_class = decoder_choices.get_class(args.decoder)

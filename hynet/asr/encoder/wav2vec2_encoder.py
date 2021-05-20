@@ -32,12 +32,18 @@ class FairSeqWav2VecCtc(AbsEncoder):
 
     def __init__(
         self,
-        input_size: int,
         w2v_url: str,
-        w2v_dir_path: str = "./",
-        output_size: int = 32,
-        normalize_before: bool = False,
-        freeze_finetune_updates: int = 0,
+        w2v_dir_path: str,
+        input_size: int,
+        output_size: int,
+        apply_mask: bool,
+        mask_prob: float,
+        mask_channel_prob: float,
+        mask_channel_length: int,
+        layerdrop: float,
+        activation_dropout: float,
+        feature_grad_mult: float,
+        freeze_finetune_updates: int,
     ):
         assert check_argument_types()
         super().__init__()
@@ -56,8 +62,6 @@ class FairSeqWav2VecCtc(AbsEncoder):
 
         self.w2v_model_path = download_w2v(w2v_url, w2v_dir_path)
 
-        self._output_size = output_size
-
         models, _, _ = fairseq.checkpoint_utils.load_model_ensemble_and_task(
             [self.w2v_model_path],
             arg_overrides={"data": w2v_dir_path},
@@ -73,10 +77,31 @@ class FairSeqWav2VecCtc(AbsEncoder):
                     "'Wav2Vec2Model, Wav2VecCTC' classes, etc."
                 )
                 raise e
+        # Configuration of the model
         model.final_proj = None
-        model.cfg.mask_prob=0.5
-        model.cfg.activation_dropout=0.1
+        model.cfg.mask_prob = mask_prob
+        # model.cfg.mask_selection = mask_selection
+        # model.cfg.mask_other = mask_other
+        # model.cfg.mask_length = mask_length
+        # model.cfg.no_mask_overlap = no_mask_overlap
+        # model.cfg.mask_min_space = mask_min_space
+
+        model.cfg.mask_channel_prob = mask_channel_prob
+        # model.cfg.mask_channel_selection = mask_channel_selection
+        # model.cfg.mask_channel_other = mask_channel_other
+        model.cfg.mask_channel_length = mask_channel_length
+        # model.cfg.no_mask_channel_overlap = no_mask_channel_overlap
+        # model.cfg.mask_channel_min_space = mask_channel_min_space
+
+        model.cfg.encoder_layerdrop = layerdrop
+        model.cfg.activation_dropout = activation_dropout
+        model.cfg.feature_grad_mult = feature_grad_mult
         
+        # Rearrange the model
+        self._output_size = output_size
+
+        self.apply_mask = apply_mask
+
         self.encoders = model
         self.pretrained_params = copy.deepcopy(model.state_dict())
 
@@ -117,7 +142,7 @@ class FairSeqWav2VecCtc(AbsEncoder):
             enc_outputs = self.encoders(
                 xs_pad,
                 masks,
-                mask=self.training,
+                mask=self.training and self.apply_mask,
                 features_only=True,
             )
 
