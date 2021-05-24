@@ -208,10 +208,10 @@ class ASRTask(AbsTask):
             help="A text mapping int-id to token",
         )
         group.add_argument(
-            "--stage",
-            type=int,
+            "--pis_ratio",
+            type=float,
             default=1,
-            help="The train stage for SSL",
+            help="The multi-iteration ratio for SSL",
         )
         group.add_argument(
             "--init",
@@ -835,48 +835,20 @@ class ASRTask(AbsTask):
         rnnt_decoder = None
 
         # 8. Build model
-        if args.stage != 1:
-            encoder_class = encoder_choices.get_class(args.encoder)
-            meta_encoder = encoder_class(input_size=input_size, **args.encoder_conf)
-            decoder_class = decoder_choices.get_class(args.decoder)
-            meta_decoder = decoder_class(
-                vocab_size=vocab_size,
-                encoder_output_size=encoder.output_size(),
-                **args.decoder_conf,
-            )
-            model = ESPnetASRModel(
-                vocab_size=vocab_size,
-                frontend=frontend,
-                specaug=specaug,
-                normalize=normalize,
-                preencoder=preencoder,
-                lm=lm,
-                encoder=encoder,
-                decoder=decoder,
-                ctc=ctc,
-                meta_encoder=meta_encoder,
-                meta_decoder=meta_decoder,
-                rnnt_decoder=rnnt_decoder,
-                token_list=token_list,
-                **args.model_conf,
-            )
-        else:
-            model = ESPnetASRModel(
-                vocab_size=vocab_size,
-                frontend=frontend,
-                specaug=specaug,
-                normalize=normalize,
-                preencoder=preencoder,
-                lm=lm,
-                encoder=encoder,
-                decoder=decoder,
-                ctc=ctc,
-                meta_encoder=None,
-                meta_decoder=None,
-                rnnt_decoder=rnnt_decoder,
-                token_list=token_list,
-                **args.model_conf,
-            )
+        model = ESPnetASRModel(
+            vocab_size=vocab_size,
+            frontend=frontend,
+            specaug=specaug,
+            normalize=normalize,
+            preencoder=preencoder,
+            lm=lm,
+            encoder=encoder,
+            decoder=decoder,
+            ctc=ctc,
+            rnnt_decoder=rnnt_decoder,
+            token_list=token_list,
+            **args.model_conf,
+        )
 
         # FIXME(kamo): Should be done in model?
         # 9. Initialize

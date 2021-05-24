@@ -1,7 +1,7 @@
 batch_type: numel
 batch_bins: 1400000
-accum_grad: 8 # 3090 4 GPU settings
-max_epoch: 200
+accum_grad: 10 # 3090 4 GPU settings
+max_epoch: 20
 patience: none
 # The initialization method for model parameters
 init: xavier_uniform
@@ -56,3 +56,12 @@ normalize: fair_like_norm
 specaug: null
 
 unused_parameters: true
+
+#############################
+##### semi task related #####
+#############################
+
+init_param: 
+    - downloads/wav2vec_pretrained_models/wav2vec_vox_100h_asml_new.pt:encoder:encoder
+
+pis_ratio: 0.5
