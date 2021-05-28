@@ -29,12 +29,15 @@ class CTC(torch.nn.Module):
         eprojs = encoder_output_sizse
         self.dropout_rate = dropout_rate
         self.ctc_type = ctc_type
-        if self.ctc_type != "fairctc":
-            self.ctc_lo = torch.nn.Linear(eprojs, odim)
         self.ignore_nan_grad = ignore_nan_grad
 
+        if self.ctc_type != "fairctc":
+            self.ctc_lo = torch.nn.Linear(eprojs, odim)
+            
         if self.ctc_type == "builtin":
             self.ctc_loss = torch.nn.CTCLoss(reduction="none")
+        elif self.ctc_type == "fairctc":
+            self.ctc_loss = torch.nn.CTCLoss(reduction="sum")
         elif self.ctc_type == "warpctc":
             import warpctc_pytorch as warp_ctc
 
@@ -43,8 +46,6 @@ class CTC(torch.nn.Module):
                     "ignore_nan_grad option is not supported for warp_ctc"
                 )
             self.ctc_loss = warp_ctc.CTCLoss(size_average=True, reduce=reduce)
-        elif self.ctc_type == "fairctc":
-            self.ctc_loss = torch.nn.CTCLoss(reduction="sum")
         else:
             raise ValueError(
                 f'ctc_type must be "builtin" or "warpctc" or "fairctc": {self.ctc_type}'

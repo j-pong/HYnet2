@@ -95,7 +95,7 @@ class TrainerOptions:
     best_model_criterion: Sequence[Sequence[str]]
     val_scheduler_criterion: Sequence[str]
     unused_parameters: bool
-    stage: int
+    pis_ratio: float
 
 
 class Trainer:
@@ -447,7 +447,6 @@ class Trainer:
         summary_writer: Optional[SummaryWriter],
         options: TrainerOptions,
         distributed_option: DistributedOption,
-        prime_iter_sample_ratio=1.0,
     ) -> bool:
         assert check_argument_types()
 
@@ -460,6 +459,7 @@ class Trainer:
         ngpu = options.ngpu
         use_wandb = options.use_wandb
         distributed = distributed_option.distributed
+        pis_ratio = options.pis_ratio # prime_iter_sampling_ratio
 
         if log_interval is None:
             try:
@@ -475,7 +475,7 @@ class Trainer:
 
         start_time = time.perf_counter()
         for iiter, ((_, batch), clean_label_flag) in enumerate(
-            reporter.measure_iter_time([iterator, aux_iterator], "iter_time", prime_iter_sample_ratio), 1
+            reporter.measure_iter_time([iterator, aux_iterator], "iter_time", pis_ratio), 1
         ):
             assert isinstance(batch, dict), type(batch)
 
@@ -491,7 +491,7 @@ class Trainer:
 
             with autocast(scaler is not None):
                 with reporter.measure_time("forward_time"):
-                    retval = model(**batch, noisy_label_flag=~clean_label_flag)
+                    retval = model(**batch, noisy_label_flag=(not clean_label_flag))
 
                     # Note(kamo):
                     # Supporting two patterns for the returned value from the model

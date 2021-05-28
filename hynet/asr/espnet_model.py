@@ -48,13 +48,11 @@ class ESPnetASRModel(AbsESPnetModel):
         specaug: Optional[AbsSpecAug],
         normalize: Optional[AbsNormalize],
         preencoder: Optional[AbsPreEncoder],
+        lm: Optional[AbsLM],
         encoder: AbsEncoder,
         decoder: AbsDecoder,
         ctc: CTC,
         rnnt_decoder: None,
-        lm: Optional[AbsLM],
-        meta_encoder: Optional[AbsEncoder],
-        meta_decoder: Optional[AbsDecoder],
         ctc_weight: float = 0.5,
         ignore_id: int = -1,
         lsm_weight: float = 0.0,
@@ -109,7 +107,6 @@ class ESPnetASRModel(AbsESPnetModel):
         text: torch.Tensor,
         text_lengths: torch.Tensor,
         noisy_label_flag: bool=False,
-        replace_label_flag: bool=False,
     ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
         """Frontend + Encoder + Decoder + Calc loss
 
@@ -135,14 +132,16 @@ class ESPnetASRModel(AbsESPnetModel):
         # 1. Encoder
         encoder_out, encoder_out_lens = self.encode(speech, speech_lengths)
             
-        # 2a. Attention-decoder branch
-        if self.ctc_weight == 1.0:
-            loss_att, acc_att, cer_att, wer_att = None, None, None, None
-        else:
-            loss_att, acc_att, cer_att, wer_att = self._calc_att_loss(
-                encoder_out, encoder_out_lens, text, text_lengths
-            )
+        # # 2a. Attention-decoder branch
+        # if self.ctc_weight == 1.0:
+        #     loss_att, acc_att, cer_att, wer_att = None, None, None, None
+        # else:
+        #     loss_att, acc_att, cer_att, wer_att = self._calc_att_loss(
+        #         encoder_out, encoder_out_lens, text, text_lengths
+        #     )
 
+        # 
+        
         # 2b. CTC branch
         if self.ctc_weight == 0.0:
             loss_ctc, cer_ctc = None, None
@@ -291,8 +290,6 @@ class ESPnetASRModel(AbsESPnetModel):
 
         # Calc CER using CTC
         cer_ctc = None
-        # TODO(j-pong): These lines has more computation on training (hyp)
-        # if not self.training and self.error_calculator is not None:
         ys_hat = self.ctc.argmax(encoder_out).data
         cer_ctc = self.error_calculator(ys_hat.cpu(), ys_pad.cpu(), is_ctc=True)
         return loss_ctc, cer_ctc
