@@ -37,8 +37,6 @@ from espnet2.train.distributed_utils import DistributedOption
 from espnet2.utils.build_dataclass import build_dataclass
 
 # Custom
-import random
-from tqdm import tqdm
 from hynet.train.reporter import Reporter
 from hynet.train.reporter import SubReporter
 
@@ -704,46 +702,6 @@ class Trainer:
             if distributed:
                 iterator_stop.fill_(1)
                 torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
-
-    @classmethod
-    @torch.no_grad()
-    def validate_confidence_one_epoch(
-        cls,
-        model: torch.nn.Module,
-        iterator: Iterable[Dict[str, torch.Tensor]],
-        reporter: SubReporter,
-        options: TrainerOptions,
-        distributed_option: DistributedOption,
-    ) -> None:
-        assert check_argument_types()
-        ngpu = options.ngpu
-        no_forward_run = options.no_forward_run
-        distributed = distributed_option.distributed
-
-        model.eval()
-
-        iterator_stop = torch.tensor(0).to("cuda" if ngpu > 0 else "cpu")
-        if ngpu > 1 or distributed:
-                raise AttributeError("This validate not support the multi-gpu settings")
-
-        # total_mean, total_max, total_min = None, None, None
-        total_hist = None
-        total_mean = None
-        for (_, batch) in tqdm(iterator):
-            assert isinstance(batch, dict), type(batch)
-            if distributed:
-                torch.distributed.all_reduce(iterator_stop, ReduceOp.SUM)
-                if iterator_stop > 0:
-                    break
-
-            batch = to_device(batch, "cuda" if ngpu > 0 else "cpu")
-            if no_forward_run:
-                continue
-            
-            model._meta_collect_stats(**batch)
-            # update the histogram parameter
-            model.stat.backward()
-            
 
     @classmethod
     @torch.no_grad()

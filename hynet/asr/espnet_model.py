@@ -132,16 +132,18 @@ class ESPnetASRModel(AbsESPnetModel):
         # 1. Encoder
         encoder_out, encoder_out_lens = self.encode(speech, speech_lengths)
             
-        # # 2a. Attention-decoder branch
-        # if self.ctc_weight == 1.0:
-        #     loss_att, acc_att, cer_att, wer_att = None, None, None, None
-        # else:
-        #     loss_att, acc_att, cer_att, wer_att = self._calc_att_loss(
-        #         encoder_out, encoder_out_lens, text, text_lengths
-        #     )
+        # 2a. Attention-decoder branch
+        if self.ctc_weight == 1.0:
+            loss_att, acc_att, cer_att, wer_att = None, None, None, None
+        else:
+            loss_att, acc_att, cer_att, wer_att = self._calc_att_loss(
+                encoder_out, encoder_out_lens, text, text_lengths
+            )
 
-        # 
-        
+        # # Pseudo label training
+        # if noisy_label_flag:
+        #     text, text_lengths = self._generate_pseudo_label(encoder_out, text, text_lengths)
+
         # 2b. CTC branch
         if self.ctc_weight == 0.0:
             loss_ctc, cer_ctc = None, None
@@ -175,6 +177,37 @@ class ESPnetASRModel(AbsESPnetModel):
         loss, stats, weight = force_gatherable((loss, stats, batch_size), loss.device)
 
         return loss, stats, weight
+    
+    @torch.no_grad()
+    def _generate_pseudo_label(self, encoder_out, text, text_lengths):
+        from espnet.nets.pytorch_backend.nets_utils import pad_list
+        from itertools import groupby
+
+        # sample from ASR model
+        ys_hat = self.ctc.argmax(encoder_out).data
+
+        # remove the blank and pad
+        text_hat = []
+        text_hat_lengths = []
+        for y in ys_hat.cpu():
+            y_hat = [x[0] for x in groupby(y)]
+            y_hat_beta = []
+            for idx in y_hat:
+                idx = int(idx)
+                if idx != self.ignore_id and idx != self.error_calculator.idx_blank:
+                    y_hat_beta.append(int(idx))
+            text_hat.append(torch.tensor(y_hat_beta).to(text.device)[:-1])
+            text_hat_lengths.append(len(y_hat_beta) - 1)
+        
+        # make the list to tensor
+        text_hat = pad_list(text_hat, self.ignore_id)
+        text_hat_lengths = torch.tensor(text_hat_lengths).to(text_lengths.device)
+
+        # replace the label and safe detach the tensor
+        text = text_hat.detach()
+        text_lengths = text_hat_lengths.detach()
+        
+        return text, text_lengths
 
     def collect_feats(
         self,
@@ -289,7 +322,6 @@ class ESPnetASRModel(AbsESPnetModel):
         loss_ctc = self.ctc(encoder_out, encoder_out_lens, ys_pad, ys_pad_lens)
 
         # Calc CER using CTC
-        cer_ctc = None
         ys_hat = self.ctc.argmax(encoder_out).data
         cer_ctc = self.error_calculator(ys_hat.cpu(), ys_pad.cpu(), is_ctc=True)
         return loss_ctc, cer_ctc

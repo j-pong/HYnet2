@@ -6,7 +6,7 @@ set -u
 set -o pipefail
 
 train_set="train_clean_100"
-train_pseudo_set="train_noisy_860"
+train_pseudo_set="train_860"
 valid_set="dev"
 test_sets="test_clean"
 

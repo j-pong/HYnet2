@@ -16,6 +16,7 @@ stage=1
 stop_stage=100000
 data_url=www.openslr.org/resources/12
 train_set="train_960"
+train_pseudo_set=
 train_dev="dev"
 
 log "$0 $*"
@@ -59,6 +60,9 @@ if [ ${stage} -le 3 ] && [ ${stop_stage} -ge 3 ]; then
     log "stage 3: combine all training and development sets"
     if [ "train_960" = "${train_set}" ]; then
         utils/combine_data.sh --extra_files utt2num_frames data/${train_set} data/train_clean_100 data/train_clean_360 data/train_other_500
+    fi
+    if [ "train_860" = "${train_pseudo_set}" ]; then
+        utils/combine_data.sh --extra_files utt2num_frames data/${train_pseudo_set} data/train_clean_360 data/train_other_500
     fi
     utils/combine_data.sh --extra_files utt2num_frames data/${train_dev} data/dev_clean data/dev_other
 fi
