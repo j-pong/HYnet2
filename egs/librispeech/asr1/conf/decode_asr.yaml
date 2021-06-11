@@ -1,3 +1,12 @@
-lm_weight: 0.0
+decoding_mode: fairseqlm
+lm_weight: 1.0
 ctc_weight: 1.0
-beam_size: 20
+beam_size: 50
+unit_lm: False
+lexicon: downloads/librispeech_lexicon/lexicon.lst
+lm_model: downloads/transformer_lm_models/lm_librispeech_word_transformer.pt
+beam_threshold: 25.0
+beam_size_token: 100
+word_score: -1.0
+sil_score: 0.0
+word_dict: downloads/transformer_lm_models/dict.ltr.txt
